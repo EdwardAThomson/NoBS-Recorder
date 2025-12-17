@@ -4,7 +4,7 @@ A minimal, reliable desktop screen recorder for Linux (X11).
 
 Built with Electron to ensure rock-solid window capturing without the complexity of OBS.
 
-![Screenshot](docs/screenshot.png) <!-- Placeholder for future screenshot -->
+![Screenshot](docs/screenshot_20251217.png)
 
 ## Features
 
