@@ -1,0 +1,19 @@
+{
+  "name": "nobs-recorder",
+  "version": "0.1.0",
+  "main": "main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron . --no-sandbox"
+  },
+  "devDependencies": {
+    "electron": "^39.2.7"
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}

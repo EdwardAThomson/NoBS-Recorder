@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="UTF-8" />
+    <title>NoBS Recorder</title>
+    <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+    <header>
+        <div class="title">
+            <h1>NoBS Recorder</h1>
+            <div class="subtitle">X11 window capture • optional webcam overlay • WebM</div>
+        </div>
+
+        <div class="row">
+            <button id="chooseWindowBtn">Choose window</button>
+            <button id="chooseScreenBtn">Choose screen</button>
+
+            <button id="setFolderBtn">Output Folder</button>
+            <span id="folderPathLabel"
+                style="font-size: 11px; color: #666; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">(Default)</span>
+
+            <button id="startBtn" disabled>Start</button>
+            <div id="recordingStatus" class="recording-status hidden">
+                <div class="rec-dot"></div>
+                <span id="recTimer">00:00</span>
+            </div>
+            <button id="stopBtn" disabled>Stop</button>
+        </div>
+    </header>
+
+    <section class="controls">
+        <div class="row">
+            <label>
+                FPS:
+                <select id="fpsSelect">
+                    <option value="15">15</option>
+                    <option value="30" selected>30</option>
+                    <option value="60">60</option>
+                </select>
+            </label>
+
+            <label>
+                Mic:
+                <select id="micSelect">
+                    <option value="">(None)</option>
+                </select>
+            </label>
+
+            <label>
+                Vol:
+                <input type="range" id="micVolume" min="-30" max="20" value="0" step="1" style="width: 80px;"
+                    title="Microphone Boost (dB)" />
+                <span id="volLabel" style="font-size: 11px; width: 35px; display: inline-block;">0dB</span>
+            </label>
+
+            <label class="spacer">
+                <input type="checkbox" id="webcamToggle" checked />
+                Webcam overlay
+            </label>
+
+            <label>
+                Camera:
+                <select id="cameraSelect"></select>
+            </label>
+
+            <label>
+                Corner:
+                <select id="cornerSelect">
+                    <option value="tr">Top-right</option>
+                    <option value="tl">Top-left</option>
+                    <option value="br">Bottom-right</option>
+                    <option value="bl" selected>Bottom-left</option>
+                </select>
+            </label>
+
+            <label>
+                Size:
+                <input type="range" id="sizeRange" min="10" max="40" value="34" />
+                <span id="sizeLabel">34%</span>
+            </label>
+        </div>
+
+        <div class="row small">
+            <div id="selectedLabel">Selected: (none)</div>
+        </div>
+    </section>
+
+    <main class="main">
+        <section class="pane">
+            <h2>Preview</h2>
+            <canvas id="mixCanvas"></canvas>
+        </section>
+
+        <section class="pane">
+            <h2>Log</h2>
+            <pre id="log"></pre>
+        </section>
+    </main>
+
+    <!-- Source picker modal -->
+    <div id="modalBackdrop" class="modal-backdrop hidden">
+        <div class="modal">
+            <div class="modal-header">
+                <div>
+                    <div class="modal-title" id="modalTitle">Choose source</div>
+                    <div class="modal-subtitle">Pick exactly one. Double click to select.</div>
+                </div>
+                <div class="row">
+                    <button id="refreshBtn">Refresh</button>
+                    <button id="closeModalBtn">Close</button>
+                </div>
+            </div>
+
+            <div class="modal-body">
+                <input id="filterInput" placeholder="Filter by name…" />
+                <div id="sourceGrid" class="grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="./renderer.js"></script>
+</body>
+
+</html>
