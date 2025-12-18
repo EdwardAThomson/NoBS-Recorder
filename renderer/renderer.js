@@ -408,7 +408,8 @@ async function startRecording() {
             try {
                 if (window.ysFixWebmDuration) {
                     log("Fixing video header...");
-                    blob = await window.ysFixWebmDuration(blob, duration);
+                    const fps = Number(fpsSelect.value) || 30;
+                    blob = await window.ysFixWebmDuration(blob, duration, { fps });
                 }
             } catch (e) {
                 log(`Header fix error: ${e}`);

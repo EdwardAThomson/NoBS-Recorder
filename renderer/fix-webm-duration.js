@@ -247,13 +247,13 @@
         this.name = name || 'Unknown';
         this.type = type || 'Unknown';
     }
-    WebmBase.prototype.updateBySource = function() { };
-    WebmBase.prototype.setSource = function(source) {
+    WebmBase.prototype.updateBySource = function () { };
+    WebmBase.prototype.setSource = function (source) {
         this.source = source;
         this.updateBySource();
     };
-    WebmBase.prototype.updateByData = function() { };
-    WebmBase.prototype.setData = function(data) {
+    WebmBase.prototype.updateByData = function () { };
+    WebmBase.prototype.setData = function (data) {
         this.data = data;
         this.updateByData();
     };
@@ -265,7 +265,7 @@
     function padHex(hex) {
         return hex.length % 2 === 1 ? '0' + hex : hex;
     }
-    WebmUint.prototype.updateBySource = function() {
+    WebmUint.prototype.updateBySource = function () {
         // use hex representation of a number instead of number value
         this.data = '';
         for (var i = 0; i < this.source.length; i++) {
@@ -273,7 +273,7 @@
             this.data += padHex(hex);
         }
     };
-    WebmUint.prototype.updateByData = function() {
+    WebmUint.prototype.updateByData = function () {
         var length = this.data.length / 2;
         this.source = new Uint8Array(length);
         for (var i = 0; i < length; i++) {
@@ -281,10 +281,10 @@
             this.source[i] = parseInt(hex, 16);
         }
     };
-    WebmUint.prototype.getValue = function() {
+    WebmUint.prototype.getValue = function () {
         return parseInt(this.data, 16);
     };
-    WebmUint.prototype.setValue = function(value) {
+    WebmUint.prototype.setValue = function (value) {
         this.setData(padHex(value.toString(16)));
     };
 
@@ -292,25 +292,25 @@
         WebmBase.call(this, name, type || 'Float');
     }
     doInherit(WebmFloat, WebmBase);
-    WebmFloat.prototype.getFloatArrayType = function() {
+    WebmFloat.prototype.getFloatArrayType = function () {
         return this.source && this.source.length === 4 ? Float32Array : Float64Array;
     };
-    WebmFloat.prototype.updateBySource = function() {
+    WebmFloat.prototype.updateBySource = function () {
         var byteArray = this.source.reverse();
         var floatArrayType = this.getFloatArrayType();
         var floatArray = new floatArrayType(byteArray.buffer);
         this.data = floatArray[0];
     };
-    WebmFloat.prototype.updateByData = function() {
+    WebmFloat.prototype.updateByData = function () {
         var floatArrayType = this.getFloatArrayType();
-        var floatArray = new floatArrayType([ this.data ]);
+        var floatArray = new floatArrayType([this.data]);
         var byteArray = new Uint8Array(floatArray.buffer);
         this.source = byteArray.reverse();
     };
-    WebmFloat.prototype.getValue = function() {
+    WebmFloat.prototype.getValue = function () {
         return this.data;
     };
-    WebmFloat.prototype.setValue = function(value) {
+    WebmFloat.prototype.setValue = function (value) {
         this.setData(value);
     };
 
@@ -318,10 +318,10 @@
         WebmBase.call(this, name, type || 'Container');
     }
     doInherit(WebmContainer, WebmBase);
-    WebmContainer.prototype.readByte = function() {
+    WebmContainer.prototype.readByte = function () {
         return this.source[this.offset++];
     };
-    WebmContainer.prototype.readUint = function() {
+    WebmContainer.prototype.readUint = function () {
         var firstByte = this.readByte();
         var bytes = 8 - firstByte.toString(2).length;
         var value = firstByte - (1 << (7 - bytes));
@@ -332,7 +332,7 @@
         }
         return value;
     };
-    WebmContainer.prototype.updateBySource = function() {
+    WebmContainer.prototype.updateBySource = function () {
         this.data = [];
         for (this.offset = 0; this.offset < this.source.length; this.offset = end) {
             var id = this.readUint();
@@ -362,7 +362,7 @@
             });
         }
     };
-    WebmContainer.prototype.writeUint = function(x, draft) {
+    WebmContainer.prototype.writeUint = function (x, draft) {
         for (var bytes = 1, flag = 0x80; x >= flag && bytes < 8; bytes++, flag *= 0x80) { }
 
         if (!draft) {
@@ -377,7 +377,7 @@
 
         this.offset += bytes;
     };
-    WebmContainer.prototype.writeSections = function(draft) {
+    WebmContainer.prototype.writeSections = function (draft) {
         this.offset = 0;
         for (var i = 0; i < this.data.length; i++) {
             var section = this.data[i],
@@ -392,14 +392,14 @@
         }
         return this.offset;
     };
-    WebmContainer.prototype.updateByData = function() {
+    WebmContainer.prototype.updateByData = function () {
         // run without accessing this.source to determine total length - need to know it to create Uint8Array
         var length = this.writeSections('draft');
         this.source = new Uint8Array(length);
         // now really write data
         this.writeSections();
     };
-    WebmContainer.prototype.getSectionById = function(id) {
+    WebmContainer.prototype.getSectionById = function (id) {
         for (var i = 0; i < this.data.length; i++) {
             var section = this.data[i];
             if (section.id === id) {
@@ -414,14 +414,14 @@
         this.setSource(source);
     }
     doInherit(WebmFile, WebmContainer);
-    WebmFile.prototype.fixDuration = function(duration, options) {
+    WebmFile.prototype.fixDuration = function (duration, options) {
         var logger = options && options.logger;
         if (logger === undefined) {
-            logger = function(message) {
+            logger = function (message) {
                 console.log(message);
             };
         } else if (!logger) {
-            logger = function() { };
+            logger = function () { };
         }
 
         var segmentSection = this.getSectionById(0x8538067);
@@ -462,6 +462,61 @@
             });
         }
 
+        if (options && options.fps) {
+            // Fix FrameRate / DefaultDuration
+            var tracksSection = segmentSection.getSectionById(0x654ae6b);
+            if (tracksSection) {
+                var trackEntries = tracksSection.data.filter(function (item) {
+                    return item.id === 0x2e;
+                });
+
+                for (var i = 0; i < trackEntries.length; i++) {
+                    var trackEntry = trackEntries[i].data;
+                    var trackTypeSection = trackEntry.getSectionById(0x3);
+
+                    // TrackType 1 is Video
+                    if (trackTypeSection && trackTypeSection.getValue() === 1) {
+                        logger('[fix-webm-duration] Found video track, setting rate info');
+                        var defaultDuration = 1000000000 / options.fps;
+
+                        var defaultDurationSection = trackEntry.getSectionById(0x3e383);
+                        if (!defaultDurationSection) {
+                            defaultDurationSection = new WebmUint('DefaultDuration', 'Uint');
+                            defaultDurationSection.setValue(Math.round(defaultDuration));
+                            trackEntry.data.push({
+                                id: 0x3e383,
+                                data: defaultDurationSection
+                            });
+                        } else {
+                            defaultDurationSection.setValue(Math.round(defaultDuration));
+                        }
+
+                        // Also add FrameRate (deprecated but useful) 0x383e3 (Float)
+                        // But library defines FrameRate (0x383e3) as Float? Yes.
+                        // But it might be inside 'Video' (0x60 -> 0x60 in library?) 
+                        // Check Video ID: 0xE0 -> 1 byte -> 0xE0 - 0x80 = 0x60. Matches.
+                        var videoSection = trackEntry.getSectionById(0x60);
+                        if (videoSection) {
+                            var frameRateSection = videoSection.getSectionById(0x383e3);
+                            if (!frameRateSection) {
+                                frameRateSection = new WebmFloat('FrameRate', 'Float');
+                                frameRateSection.setValue(options.fps);
+                                videoSection.data.push({
+                                    id: 0x383e3,
+                                    data: frameRateSection
+                                });
+                            } else {
+                                frameRateSection.setValue(options.fps);
+                            }
+                            videoSection.updateByData(); // Update Video container
+                        }
+                        trackEntry.updateByData(); // Update TrackEntry container
+                    }
+                }
+                tracksSection.updateByData(); // Update Tracks container
+            }
+        }
+
         // set default time scale to 1 millisecond (1000000 nanoseconds)
         timeScaleSection.setValue(1000000);
         infoSection.updateByData();
@@ -470,8 +525,8 @@
 
         return true;
     };
-    WebmFile.prototype.toBlob = function(mimeType) {
-        return new Blob([ this.source.buffer ], { type: mimeType || 'video/webm' });
+    WebmFile.prototype.toBlob = function (mimeType) {
+        return new Blob([this.source.buffer], { type: mimeType || 'video/webm' });
     };
 
     function fixWebmDuration(blob, duration, callback, options) {
@@ -482,14 +537,14 @@
         }
 
         if (!callback) {
-            return new Promise(function(resolve) {
+            return new Promise(function (resolve) {
                 fixWebmDuration(blob, duration, resolve, options);
             });
         }
 
         try {
             var reader = new FileReader();
-            reader.onloadend = function() {
+            reader.onloadend = function () {
                 try {
                     var file = new WebmFile(new Uint8Array(reader.result));
                     if (file.fixDuration(duration, options)) {
