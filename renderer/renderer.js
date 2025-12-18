@@ -393,7 +393,7 @@ async function startRecording() {
 
     recorder = new MediaRecorder(combinedStream, {
         mimeType,
-        videoBitsPerSecond: 4_000_000
+        videoBitsPerSecond: 3_000_000
     });
 
     recorder.ondataavailable = (e) => {
@@ -402,7 +402,17 @@ async function startRecording() {
 
     recorder.onstop = async () => {
         try {
-            const blob = new Blob(recordedChunks, { type: recorder.mimeType || "video/webm" });
+            const duration = Date.now() - startTime;
+            let blob = new Blob(recordedChunks, { type: recorder.mimeType || "video/webm" });
+
+            try {
+                if (window.ysFixWebmDuration) {
+                    log("Fixing video header...");
+                    blob = await window.ysFixWebmDuration(blob, duration);
+                }
+            } catch (e) {
+                log(`Header fix error: ${e}`);
+            }
 
             if (outputFolder) {
                 // Auto-save to folder
