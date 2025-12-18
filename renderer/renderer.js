@@ -328,6 +328,11 @@ async function refreshSources() {
 async function startRecording() {
     if (!displayStream) return;
 
+    if (!micSelect.value) {
+        alert("Please select a microphone before recording.");
+        return;
+    }
+
     const fps = Number(fpsSelect.value);
 
     // ensure draw loop running
