@@ -37,6 +37,7 @@ let allSources = [];
 let selectedSource = null; // {id, name}
 
 let displayStream = null;
+let sysAudioStream = null;
 let camStream = null;
 let micStream = null;
 
@@ -210,7 +211,11 @@ async function acquireDesktopStream(sourceId) {
 
     // Important: chromeMediaSource + chromeMediaSourceId is the desktopCapturer path
     displayStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+        audio: {
+            mandatory: {
+                chromeMediaSource: "desktop"
+            }
+        },
         video: {
             mandatory: {
                 chromeMediaSource: "desktop",
@@ -219,6 +224,17 @@ async function acquireDesktopStream(sourceId) {
             }
         }
     });
+
+    // Extract audio track if present (system audio)
+    const audioTracks = displayStream.getAudioTracks();
+    if (audioTracks.length > 0) {
+        log("System audio track found.");
+        // We keep it in a separate stream/variable so we can mix it later
+        sysAudioStream = new MediaStream(audioTracks);
+    } else {
+        log("No system audio track.");
+        sysAudioStream = null;
+    }
 
     displayVideo = makeVideoEl(displayStream);
     await displayVideo.play();
@@ -229,7 +245,9 @@ async function acquireDesktopStream(sourceId) {
         log("Source ended (window closed or capture stopped).");
         if (recorder && recorder.state !== "inactive") stopRecording();
         stopStream(displayStream);
+        stopStream(sysAudioStream);
         displayStream = null;
+        sysAudioStream = null;
         displayVideo = null;
         startBtn.disabled = true;
         selectedLabel.textContent = "Selected: (none)";
@@ -300,7 +318,9 @@ function renderSources() {
 
                 // tear down old display stream if any
                 stopStream(displayStream);
+                stopStream(sysAudioStream);
                 displayStream = null;
+                sysAudioStream = null;
                 displayVideo = null;
 
                 await acquireDesktopStream(s.id);
@@ -328,48 +348,60 @@ async function refreshSources() {
 async function startRecording() {
     if (!displayStream) return;
 
-    if (!micSelect.value) {
-        alert("Please select a microphone before recording.");
-        return;
-    }
+    // We no longer strictly require a microphone, as system audio might be sufficient.
+    // However, if neither is present, it will be a silent video.
 
     const fps = Number(fpsSelect.value);
 
     // ensure draw loop running
     if (!animationHandle) drawLoop();
 
-    if (!animationHandle) drawLoop();
-
     let audioTrack = null;
 
-    // Acquire audio if selected
-    if (micSelect.value) {
-        try {
-            micStream = await navigator.mediaDevices.getUserMedia({
-                audio: { deviceId: { exact: micSelect.value }, echoCancellation: false, noiseSuppression: false },
-                video: false
-            });
-            log("Microphone started.");
+    // Process/Mix Audio (System Audio + Mic)
+    if (micSelect.value || sysAudioStream) {
+        if (!audioCtx) audioCtx = new AudioContext();
+        const dest = audioCtx.createMediaStreamDestination();
 
-            // Create Audio Pipeline for Volume Boost
-            audioCtx = new AudioContext();
-            const source = audioCtx.createMediaStreamSource(micStream);
-            gainNode = audioCtx.createGain();
+        // 1. Mic path
+        if (micSelect.value) {
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({
+                    audio: { deviceId: { exact: micSelect.value }, echoCancellation: false, noiseSuppression: false },
+                    video: false
+                });
+                log("Microphone started.");
 
-            // Convert dB to Gain: 10 ^ (db / 20)
-            // 0dB = 1.0, +20dB = 10.0, -20dB = 0.1
-            const db = Number(micVolume.value);
-            const gain = Math.pow(10, db / 20);
-            gainNode.gain.value = gain;
+                const micSource = audioCtx.createMediaStreamSource(micStream);
+                gainNode = audioCtx.createGain();
 
-            const dest = audioCtx.createMediaStreamDestination();
-            source.connect(gainNode);
-            gainNode.connect(dest);
+                // Set initial volume
+                const db = Number(micVolume.value);
+                const gain = Math.pow(10, db / 20);
+                gainNode.gain.value = gain;
 
+                micSource.connect(gainNode);
+                gainNode.connect(dest);
+
+            } catch (e) {
+                log(`Mic error: ${String(e)}`);
+            }
+        }
+
+        // 2. System Audio path
+        if (sysAudioStream) {
+            try {
+                const sysSource = audioCtx.createMediaStreamSource(sysAudioStream);
+                // Connect directly to dest
+                sysSource.connect(dest);
+                log("System audio mixed.");
+            } catch (e) {
+                log(`Sys audio mix error: ${String(e)}`);
+            }
+        }
+
+        if (dest.stream.getAudioTracks().length > 0) {
             audioTrack = dest.stream.getAudioTracks()[0];
-
-        } catch (e) {
-            log(`Mic error: ${String(e)}`);
         }
     }
 
@@ -588,6 +620,7 @@ window.addEventListener("beforeunload", () => {
         if (recorder && recorder.state !== "inactive") recorder.stop();
     } catch { }
     stopStream(displayStream);
+    stopStream(sysAudioStream);
     stopStream(camStream);
     if (animationHandle) cancelAnimationFrame(animationHandle);
 });
