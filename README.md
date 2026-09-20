@@ -17,8 +17,11 @@ Built with Electron to ensure rock-solid window capturing without the complexity
     *   **Silence Guard**: Starting with no microphone selected and no system audio asks
         for confirmation first, rather than quietly producing a mute recording.
 *   **Webcam Overlay**: Optional Picture-in-Picture webcam view:
-    *   **Auto-start**: Remembers your last used camera.
+    *   **Auto-start**: Opens the webcam on launch while the overlay is ticked.
+        The chosen camera is kept for the session but is not yet saved between runs.
     *   **Customizable**: Adjust corner position and size.
+*   **Device Hot-plug**: Camera and microphone lists refresh when hardware is plugged
+    in or removed, keeping your current selection whenever it still exists.
 *   **Auto-Save**: Recordings are written straight to disk, no dialog. The default is
     the platform's own videos folder, resolved via Electron's `app.getPath("videos")`
     -- your XDG videos directory on Linux, `C:\Users\<you>\Videos` on Windows -- and
@@ -28,7 +31,8 @@ Built with Electron to ensure rock-solid window capturing without the complexity
     unavailable, so you always know what is being captured.
 *   **Visual Feedback**: Red blinking recording indicator and on-screen timer.
 *   **Reliable Enumeration**: Uses `desktopCapturer` for window and screen listing.
-*   **WebM Output**: Saves natively to highly compatible `.webm` files.
+*   **WebM Output**: Saves natively to highly compatible `.webm` files, remuxed on save
+    so they play correctly on Windows as well as Linux.
 *   **Privacy First**: Runs entirely locally. No cloud uploads.
 
 ## Prerequisites
@@ -120,6 +124,15 @@ run until the executable is code-signed.
 
 *   `main.js`: Electron main process (window management, file saving IPC).
 *   `renderer/renderer.js`: UI logic, stream acquisition, and canvas compositing.
+*   `renderer/webm-remux.js`: Rewrites the recorded container before saving.
+
+MediaRecorder is a live muxer, so it writes every WebM cluster with an *unknown size*
+marker. Players that scan for cluster IDs (ffmpeg, GStreamer, and so most things on
+Linux) cope with that; Windows Media Foundation does not, and stops at the end of the
+first cluster -- about one timeslice, or one second -- while still reporting the correct
+duration. `webm-remux.js` works out where each cluster really ends by parsing its
+children, then re-emits the file with definite sizes. It repairs already-broken files
+by the same route, since it never trusts a declared cluster size.
 *   `build-resources/`: Icons and other packaging assets.
 *   `docs/`: Design specifications and plans.
 
