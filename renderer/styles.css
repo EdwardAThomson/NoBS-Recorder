@@ -51,9 +51,30 @@ h1 {
     border-bottom: 1px solid var(--border);
 }
 
+.link-btn {
+    background: none;
+    border: none;
+    padding: 0 2px;
+    color: var(--muted);
+    font-size: 11px;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.link-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+    text-decoration: none;
+}
+
 .controls .small {
     color: var(--muted);
     font-size: 12px;
+}
+
+/* System audio is not offered on every platform; dim it when unavailable. */
+#sysAudioLabel:has(#sysAudioToggle:disabled) {
+    opacity: 0.5;
 }
 
 .main {

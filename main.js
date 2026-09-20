@@ -2,6 +2,9 @@ const { app, BrowserWindow, ipcMain, dialog, desktopCapturer } = require("electr
 const fs = require("fs");
 const path = require("path");
 
+// Chromium's setuid sandbox commonly fails on Linux desktops; Windows/macOS keep it on.
+if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1180,
@@ -44,31 +47,54 @@ ipcMain.handle("list-sources", async (_evt, { type }) => {
         }));
 });
 
-ipcMain.handle("choose-folder", async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
-        properties: ["openDirectory"]
-    });
+function isDirectory(p) {
+    try {
+        return !!p && fs.statSync(p).isDirectory();
+    } catch (e) {
+        return false;
+    }
+}
+
+// Recordings land in the platform's Videos folder unless the user picks
+// somewhere else. app.getPath resolves this per-OS: the XDG videos dir on
+// Linux, the Videos known folder on Windows. Some minimal Linux setups have
+// no XDG dirs configured at all, hence the fallback.
+function defaultOutputFolder() {
+    try {
+        return app.getPath("videos");
+    } catch (e) {
+        return app.getPath("home");
+    }
+}
+
+ipcMain.handle("choose-folder", async (_evt, { defaultPath } = {}) => {
+    const options = { properties: ["openDirectory", "createDirectory"] };
+    if (isDirectory(defaultPath)) options.defaultPath = defaultPath;
+    const { canceled, filePaths } = await dialog.showOpenDialog(options);
     return canceled ? null : filePaths[0];
 });
 
 // Settings Persistence
 const SETTINGS_FILE = path.join(app.getPath("userData"), "settings.json");
 
-ipcMain.handle("get-settings", async () => {
+function readSettings() {
     try {
         if (fs.existsSync(SETTINGS_FILE)) {
-            const data = fs.readFileSync(SETTINGS_FILE, "utf-8");
-            return JSON.parse(data);
+            return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
         }
     } catch (e) {
         console.error("Error reading settings:", e);
     }
     return {};
-});
+}
 
-ipcMain.handle("save-settings", async (_evt, settings) => {
+ipcMain.handle("get-settings", async () => readSettings());
+
+ipcMain.handle("save-settings", async (_evt, patch) => {
     try {
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+        // Merge, so saving one setting does not wipe the others.
+        const merged = { ...readSettings(), ...patch };
+        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2));
         return true;
     } catch (e) {
         console.error("Error saving settings:", e);
@@ -77,6 +103,36 @@ ipcMain.handle("save-settings", async (_evt, settings) => {
 });
 
 ipcMain.handle("get-home-path", () => app.getPath("home"));
+
+ipcMain.handle("confirm-silent-recording", async (_evt, { detail }) => {
+    const { response } = await dialog.showMessageBox({
+        type: "warning",
+        buttons: ["Cancel", "Record anyway"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "No audio source",
+        message: "This recording will have no sound.",
+        detail: detail
+    });
+    return response === 1;
+});
+
+ipcMain.handle("resolve-output-folder", () => {
+    const saved = readSettings().outputFolder;
+
+    // A settings file that travelled between machines carries a path that does
+    // not exist here. Never try to create it: a Linux "/home/me/Videos" would
+    // be created as "C:\home\me\Videos" on Windows. Fall back instead.
+    if (isDirectory(saved)) return { folder: saved, isDefault: false, rejected: null };
+
+    const fallback = defaultOutputFolder();
+    try {
+        fs.mkdirSync(fallback, { recursive: true });
+    } catch (e) {
+        console.error("Could not create default output folder:", e);
+    }
+    return { folder: fallback, isDefault: true, rejected: saved || null };
+});
 
 ipcMain.handle("choose-save-path", async () => {
     console.log("IPC: choose-save-path called");
@@ -94,13 +150,16 @@ ipcMain.handle("choose-save-path", async () => {
     }
 });
 
-ipcMain.handle("write-file", async (_evt, { filePath, arrayBuffer }) => {
-    console.log(`IPC: write-file called for ${filePath}, size: ${arrayBuffer.byteLength}`);
+ipcMain.handle("write-file", async (_evt, { filePath, folder, filename, arrayBuffer }) => {
+    // The renderer has no path module, so it may pass folder + filename and let us join.
+    const target = filePath || path.join(folder, filename);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    console.log(`IPC: write-file called for ${target}, size: ${arrayBuffer.byteLength}`);
     try {
         const buffer = Buffer.from(arrayBuffer);
-        fs.writeFileSync(filePath, buffer);
+        fs.writeFileSync(target, buffer);
         console.log("IPC: write-file success");
-        return true;
+        return target;
     } catch (e) {
         console.error("IPC: write-file error:", e);
         throw e;

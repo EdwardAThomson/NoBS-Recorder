@@ -11,7 +11,7 @@
     <header>
         <div class="title">
             <h1>NoBS Recorder</h1>
-            <div class="subtitle">X11 window capture • optional webcam overlay • WebM</div>
+            <div class="subtitle">Window &amp; screen capture • optional webcam overlay • WebM</div>
         </div>
 
         <div class="row">
@@ -19,6 +19,8 @@
             <button id="chooseScreenBtn">Choose screen</button>
 
             <button id="setFolderBtn">Output Folder</button>
+            <button id="resetFolderBtn" class="link-btn"
+                title="Go back to this platform's default folder">Reset</button>
             <span id="folderPathLabel"
                 style="font-size: 11px; color: #666; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">(Default)</span>
 
@@ -51,9 +53,16 @@
 
             <label>
                 Vol:
-                <input type="range" id="micVolume" min="-30" max="20" value="0" step="1" style="width: 80px;"
-                    title="Microphone Boost (dB)" />
+                <input type="range" id="micVolume" min="-30" max="40" value="0" step="1" style="width: 110px;"
+                    title="Microphone boost. Above about +20dB a limiter keeps peaks from clipping." />
                 <span id="volLabel" style="font-size: 11px; width: 35px; display: inline-block;">0dB</span>
+            </label>
+
+            <label id="sysAudioLabel"
+                title="Record the computer's own output (what comes out of the speakers), mixed with the mic.">
+                <input type="checkbox" id="sysAudioToggle" checked disabled />
+                System audio
+                <span id="sysAudioHint" class="small">(pick a source)</span>
             </label>
 
             <label class="spacer">
@@ -121,7 +130,7 @@
         </div>
     </div>
 
-    <script src="./fix-webm-duration.js"></script>
+    <script src="./webm-remux.js"></script>
     <script src="./renderer.js"></script>
 </body>
 

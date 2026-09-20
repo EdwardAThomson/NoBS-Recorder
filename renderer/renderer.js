@@ -12,12 +12,15 @@ const sizeLabel = document.getElementById("sizeLabel");
 const micSelect = document.getElementById("micSelect");
 const micVolume = document.getElementById("micVolume");
 const volLabel = document.getElementById("volLabel");
+const sysAudioToggle = document.getElementById("sysAudioToggle");
+const sysAudioHint = document.getElementById("sysAudioHint");
 
 const recordingStatus = document.getElementById("recordingStatus");
 const recTimer = document.getElementById("recTimer");
 
 const setFolderBtn = document.getElementById("setFolderBtn");
 const folderPathLabel = document.getElementById("folderPathLabel");
+const resetFolderBtn = document.getElementById("resetFolderBtn");
 
 const selectedLabel = document.getElementById("selectedLabel");
 const canvas = document.getElementById("mixCanvas");
@@ -50,9 +53,13 @@ let recordedChunks = [];
 let timerInterval = null;
 let startTime = 0;
 let outputFolder = null;
+let usingDefaultFolder = true;
 
 let audioCtx = null;
 let gainNode = null;
+let micLimiter = null;
+let micShaper = null;
+let micDest = null;
 let homeDir = "";
 
 function formatPath(p) {
@@ -61,6 +68,71 @@ function formatPath(p) {
         return "~" + p.slice(homeDir.length);
     }
     return p;
+}
+
+// System audio is only offered when the platform actually handed us a loopback track.
+function updateSysAudioUi() {
+    const available = !!sysAudioStream;
+    sysAudioToggle.disabled = !available;
+    if (!displayStream) {
+        sysAudioHint.textContent = "(pick a source)";
+    } else {
+        sysAudioHint.textContent = available ? "" : "(not supported here)";
+    }
+}
+
+// A soft-knee ceiling: transparent below -3dBFS, and mathematically unable to
+// exceed 1.0 no matter how hard the input is driven. The compressor alone still
+// let peaks through above 0dBFS, so this sits after it as the real backstop.
+function makeCeilingCurve() {
+    const n = 8192;
+    const curve = new Float32Array(n);
+    const knee = 0.7;
+    for (let i = 0; i < n; i++) {
+        const x = (i * 2) / (n - 1) - 1;
+        const a = Math.abs(x);
+        const y = a <= knee ? a : knee + (1 - knee) * Math.tanh((a - knee) / (1 - knee));
+        curve[i] = (x < 0 ? -1 : 1) * y;
+    }
+    return curve;
+}
+
+function setMicGain(db) {
+    if (!gainNode) return;
+    gainNode.gain.value = Math.pow(10, db / 20);
+    routeMicChain();
+}
+
+// Only engage the limiter when the user is actually boosting. At or below 0dB
+// the mic passes straight through, so nothing changes for anyone happy today.
+function routeMicChain() {
+    if (!gainNode || !micDest) return;
+    try { gainNode.disconnect(); } catch (e) { /* not connected yet */ }
+    if (Number(micVolume.value) > 0 && micLimiter) gainNode.connect(micLimiter);
+    else gainNode.connect(micDest);
+}
+
+function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+    }, 100);
+    log(`Saved via download: ${filename}`);
+}
+
+function applyOutputFolder(folder, isDefault) {
+    outputFolder = folder;
+    usingDefaultFolder = isDefault;
+    folderPathLabel.textContent = formatPath(folder) + (isDefault ? " (default)" : "");
+    folderPathLabel.title = folder;
+    resetFolderBtn.disabled = isDefault;
 }
 
 function log(msg) {
@@ -166,13 +238,18 @@ function drawLoop() {
 async function listCameras() {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cams = devices.filter(d => d.kind === "videoinput");
+
+    // keep current selection if possible
+    const current = cameraSelect.value;
     cameraSelect.innerHTML = "";
+
     for (const cam of cams) {
         const opt = document.createElement("option");
         opt.value = cam.deviceId;
         opt.textContent = cam.label || `Camera ${cameraSelect.length + 1}`;
         cameraSelect.appendChild(opt);
     }
+    if (current && cams.some(c => c.deviceId === current)) cameraSelect.value = current;
 }
 
 async function startWebcam() {
@@ -210,20 +287,29 @@ async function acquireDesktopStream(sourceId) {
     const fps = Number(fpsSelect.value);
 
     // Important: chromeMediaSource + chromeMediaSourceId is the desktopCapturer path
-    displayStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-            mandatory: {
-                chromeMediaSource: "desktop"
-            }
-        },
-        video: {
-            mandatory: {
-                chromeMediaSource: "desktop",
-                chromeMediaSourceId: sourceId,
-                maxFrameRate: fps
-            }
+    const video = {
+        mandatory: {
+            chromeMediaSource: "desktop",
+            chromeMediaSourceId: sourceId,
+            maxFrameRate: fps
         }
-    });
+    };
+
+    // Loopback audio exists on Windows but not on Linux, and asking for it where it
+    // is unsupported rejects the whole request - so retry without it.
+    try {
+        displayStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                mandatory: {
+                    chromeMediaSource: "desktop"
+                }
+            },
+            video
+        });
+    } catch (e) {
+        log(`Desktop audio unavailable (${e.name}); capturing video only.`);
+        displayStream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+    }
 
     // Extract audio track if present (system audio)
     const audioTracks = displayStream.getAudioTracks();
@@ -235,6 +321,7 @@ async function acquireDesktopStream(sourceId) {
         log("No system audio track.");
         sysAudioStream = null;
     }
+    updateSysAudioUi();
 
     displayVideo = makeVideoEl(displayStream);
     await displayVideo.play();
@@ -249,6 +336,7 @@ async function acquireDesktopStream(sourceId) {
         displayStream = null;
         sysAudioStream = null;
         displayVideo = null;
+        updateSysAudioUi();
         startBtn.disabled = true;
         selectedLabel.textContent = "Selected: (none)";
         selectedSource = null;
@@ -351,6 +439,22 @@ async function startRecording() {
     // We no longer strictly require a microphone, as system audio might be sufficient.
     // However, if neither is present, it will be a silent video.
 
+    const useSysAudio = !!sysAudioStream && sysAudioToggle.checked;
+
+    // Nothing selected means a silent video, which is easy to do by accident
+    // and only discovered after the fact.
+    if (!micSelect.value && !useSysAudio) {
+        const detail = sysAudioStream
+            ? 'No microphone is selected, and System audio is switched off.'
+            : 'No microphone is selected, and this platform provides no system audio.';
+        const proceed = await window.api.confirmSilentRecording(detail);
+        if (!proceed) {
+            log('Start cancelled: the recording would have had no sound.');
+            return;
+        }
+        log('Recording with no audio source, as confirmed.');
+    }
+
     const fps = Number(fpsSelect.value);
 
     // ensure draw loop running
@@ -359,7 +463,7 @@ async function startRecording() {
     let audioTrack = null;
 
     // Process/Mix Audio (System Audio + Mic)
-    if (micSelect.value || sysAudioStream) {
+    if (micSelect.value || useSysAudio) {
         if (!audioCtx) audioCtx = new AudioContext();
         const dest = audioCtx.createMediaStreamDestination();
 
@@ -373,15 +477,27 @@ async function startRecording() {
                 log("Microphone started.");
 
                 const micSource = audioCtx.createMediaStreamSource(micStream);
+                micDest = dest;
                 gainNode = audioCtx.createGain();
 
-                // Set initial volume
-                const db = Number(micVolume.value);
-                const gain = Math.pow(10, db / 20);
-                gainNode.gain.value = gain;
+                // Quiet Windows inputs need far more than the old +20dB ceiling,
+                // but raw gain that high clips hard on peaks.
+                micLimiter = audioCtx.createDynamicsCompressor();
+                micLimiter.threshold.value = -6;
+                micLimiter.knee.value = 0;
+                micLimiter.ratio.value = 20;
+                micLimiter.attack.value = 0.003;
+                micLimiter.release.value = 0.25;
+
+                micShaper = audioCtx.createWaveShaper();
+                micShaper.curve = makeCeilingCurve();
+                micShaper.oversample = "4x";
+
+                micLimiter.connect(micShaper);
+                micShaper.connect(dest);
 
                 micSource.connect(gainNode);
-                gainNode.connect(dest);
+                setMicGain(Number(micVolume.value));
 
             } catch (e) {
                 log(`Mic error: ${String(e)}`);
@@ -389,7 +505,7 @@ async function startRecording() {
         }
 
         // 2. System Audio path
-        if (sysAudioStream) {
+        if (useSysAudio) {
             try {
                 const sysSource = audioCtx.createMediaStreamSource(sysAudioStream);
                 // Connect directly to dest
@@ -438,42 +554,29 @@ async function startRecording() {
             let blob = new Blob(recordedChunks, { type: recorder.mimeType || "video/webm" });
 
             try {
-                if (window.ysFixWebmDuration) {
-                    log("Fixing video header...");
-                    const fps = Number(fpsSelect.value) || 30;
-                    blob = await window.ysFixWebmDuration(blob, duration, { fps });
+                if (window.webmRemux) {
+                    log("Finalising container...");
+                    const fixed = await window.webmRemux.remuxBlob(blob, duration);
+                    blob = fixed.blob;
+                    if (fixed.stats) {
+                        log(`Container: ${fixed.stats.clusters} clusters, ${(duration / 1000).toFixed(1)}s.`);
+                    }
                 }
             } catch (e) {
-                log(`Header fix error: ${e}`);
+                log(`Container fix error: ${e}`);
             }
 
-            if (outputFolder) {
-                // Auto-save to folder
+            const filename = `nobs-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+            try {
+                // The renderer has no path module, so main joins folder + filename
+                // with the right separator for the platform.
                 const arrayBuffer = await blob.arrayBuffer();
-                const filename = `nobs-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
-                // Use the main process to join paths to be safe (or just slash it if we assume linux)
-                // We'll trust the user provided a valid path. 
-                // Note: creating a proper path join in renderer is tricky without node integration, 
-                // so we will pass folder + filename to main.
-                // Actually, let's just append '/' for now as we are on Linux.
-                const filePath = `${outputFolder}/${filename}`;
-
-                await window.api.writeFile({ filePath, arrayBuffer });
-                log(`Auto-saved: ${filePath}`);
-            } else {
-                // Fallback to Download
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.style.display = "none";
-                a.href = url;
-                a.download = `nobs-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
-                }, 100);
-                log(`Saved via download: ${a.download}`);
+                const savedPath = await window.api.writeFile({ folder: outputFolder, filename, arrayBuffer });
+                log(`Saved: ${savedPath}`);
+            } catch (e) {
+                // Never lose a recording because the folder went away.
+                log(`Could not write to ${outputFolder} (${e}); downloading instead.`);
+                downloadBlob(blob, filename);
             }
         } catch (err) {
             log(`Save failed: ${String(err)}`);
@@ -525,6 +628,9 @@ function stopRecording() {
         audioCtx.close();
         audioCtx = null;
         gainNode = null;
+        micLimiter = null;
+        micShaper = null;
+        micDest = null;
     }
 }
 
@@ -587,10 +693,7 @@ micVolume.addEventListener("input", () => {
     const label = db > 0 ? `+${db}dB` : `${db}dB`;
     volLabel.textContent = label;
 
-    if (gainNode) {
-        const gain = Math.pow(10, db / 20);
-        gainNode.gain.value = gain;
-    }
+    setMicGain(db);
 });
 
 sizeRange.addEventListener("input", () => {
@@ -599,18 +702,26 @@ sizeRange.addEventListener("input", () => {
 
 setFolderBtn.addEventListener("click", async () => {
     try {
-        const folder = await window.api.chooseFolder();
+        const folder = await window.api.chooseFolder(outputFolder);
         if (folder) {
-            outputFolder = folder;
-            folderPathLabel.textContent = formatPath(folder);
-            folderPathLabel.title = folder; // tooltip shows full path
+            applyOutputFolder(folder, false);
             log(`Output folder set: ${folder}`);
-
-            // Persist setting
-            await window.api.saveSettings({ outputFolder });
+            await window.api.saveSettings({ outputFolder: folder });
         }
     } catch (e) {
         log(`Folder selection error: ${String(e)}`);
+    }
+});
+
+resetFolderBtn.addEventListener("click", async () => {
+    try {
+        // Clearing the setting makes main fall back to the platform default.
+        await window.api.saveSettings({ outputFolder: null });
+        const resolved = await window.api.resolveOutputFolder();
+        applyOutputFolder(resolved.folder, resolved.isDefault);
+        log(`Output folder reset to default: ${resolved.folder}`);
+    } catch (e) {
+        log(`Folder reset error: ${String(e)}`);
     }
 });
 
@@ -623,6 +734,23 @@ window.addEventListener("beforeunload", () => {
     stopStream(sysAudioStream);
     stopStream(camStream);
     if (animationHandle) cancelAnimationFrame(animationHandle);
+});
+
+// The lists are built once at startup, so without this a headset plugged in
+// mid-session never shows up.
+navigator.mediaDevices.addEventListener("devicechange", async () => {
+    try {
+        await listCameras();
+        await listMicrophones();
+        log("Device list refreshed.");
+    } catch (e) {
+        log(`Device refresh error: ${String(e)}`);
+    }
+});
+
+sysAudioToggle.addEventListener("change", async () => {
+    await window.api.saveSettings({ systemAudio: sysAudioToggle.checked });
+    log(`System audio ${sysAudioToggle.checked ? "enabled" : "disabled"}.`);
 });
 
 // helpful: request device labels by doing a quick enumerate after permissions
@@ -638,12 +766,15 @@ window.addEventListener("beforeunload", () => {
 
         // Load Settings
         const settings = await window.api.getSettings();
-        if (settings && settings.outputFolder) {
-            outputFolder = settings.outputFolder;
-            folderPathLabel.textContent = formatPath(outputFolder);
-            folderPathLabel.title = outputFolder;
-            log(`Loaded output folder: ${outputFolder}`);
+        if (settings && typeof settings.systemAudio === "boolean") {
+            sysAudioToggle.checked = settings.systemAudio;
         }
+        const resolved = await window.api.resolveOutputFolder();
+        applyOutputFolder(resolved.folder, resolved.isDefault);
+        if (resolved.rejected) {
+            log(`Saved folder is not available on this machine: ${resolved.rejected}`);
+        }
+        log(`Output folder: ${resolved.folder}${resolved.isDefault ? " (default)" : ""}`);
 
         await listCameras();
         await listMicrophones();
