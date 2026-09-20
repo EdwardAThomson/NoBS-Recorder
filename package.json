@@ -4,19 +4,61 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
-    "start": "electron . --no-sandbox"
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
   },
   "devDependencies": {
-    "electron": "^39.2.7"
-  },
-  "directories": {
-    "doc": "docs"
+    "electron": "^39.2.7",
+    "electron-builder": "^26.15.3"
   },
   "keywords": [],
-  "author": "",
+  "author": "EdwardAThomson",
   "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "fix-webm-duration": "^1.0.6"
+  "description": "A minimal, reliable desktop screen recorder.",
+  "build": {
+    "appId": "com.edwardathomson.nobs-recorder",
+    "productName": "NoBS Recorder",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "NoBS Recorder"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo",
+      "synopsis": "Minimal desktop screen recorder"
+    }
   }
 }
