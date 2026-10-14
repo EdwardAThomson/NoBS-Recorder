@@ -59,6 +59,7 @@ let usingDefaultFolder = true;
 let audioCtx = null;
 let gainNode = null;
 let micLimiter = null;
+let closePending = false;
 let micShaper = null;
 let micDest = null;
 let homeDir = "";
@@ -621,10 +622,19 @@ async function startRecording() {
             }
         } catch (err) {
             log(`Save failed: ${String(err)}`);
+        } finally {
+            // Only now is the file actually on disk, so only now is it safe to
+            // let a pending close go through.
+            window.api.setRecordingState(false);
+            if (closePending) {
+                closePending = false;
+                window.api.readyToClose();
+            }
         }
     };
 
     recorder.start(1000);
+    window.api.setRecordingState(true);
 
     startBtn.disabled = true;
     stopBtn.disabled = false;
@@ -813,6 +823,18 @@ window.addEventListener("beforeunload", () => {
 
 // The lists are built once at startup, so without this a headset plugged in
 // mid-session never shows up.
+// The window's close button is intercepted in the main process while a
+// recording is running; this is the "Save and close" branch coming back.
+window.api.onStopAndSave(() => {
+    if (!recorder || recorder.state === "inactive") {
+        window.api.readyToClose();
+        return;
+    }
+    closePending = true;
+    log("Closing: finishing the recording first...");
+    stopRecording();
+});
+
 navigator.mediaDevices.addEventListener("devicechange", async () => {
     try {
         await listCameras();

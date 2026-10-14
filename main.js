@@ -5,6 +5,34 @@ const path = require("path");
 // Chromium's setuid sandbox commonly fails on Linux desktops; Windows/macOS keep it on.
 if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
 
+let mainWindow = null;
+// Mirrors the renderer's recorder state so the close handler, which cannot wait
+// on an async round trip, already knows the answer.
+let isRecording = false;
+let closeApproved = false;
+
+async function confirmCloseWhileRecording(win) {
+    const { response } = await dialog.showMessageBox(win, {
+        type: "warning",
+        buttons: ["Keep recording", "Save and close", "Discard and close"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "Recording in progress",
+        message: "A recording is still running.",
+        detail: "Closing now would throw away everything captured so far."
+    });
+
+    if (response === 0) return;
+    if (response === 1) {
+        // The renderer still has to assemble, remux and write the file; it calls
+        // back on "ready-to-close" once that has finished or failed.
+        win.webContents.send("stop-and-save");
+        return;
+    }
+    closeApproved = true;
+    win.close();
+}
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1180,
@@ -16,6 +44,18 @@ function createWindow() {
             preload: path.join(__dirname, "preload.js"),
             backgroundThrottling: false
         }
+    });
+
+    mainWindow = win;
+
+    win.on("close", (e) => {
+        if (closeApproved || !isRecording) return;
+        e.preventDefault();
+        confirmCloseWhileRecording(win);
+    });
+
+    win.on("closed", () => {
+        mainWindow = null;
     });
 
     win.loadFile(path.join(__dirname, "renderer", "index.html"));
@@ -100,6 +140,15 @@ ipcMain.handle("save-settings", async (_evt, patch) => {
         console.error("Error saving settings:", e);
         return false;
     }
+});
+
+ipcMain.on("recording-state", (_evt, recording) => {
+    isRecording = !!recording;
+});
+
+ipcMain.on("ready-to-close", () => {
+    closeApproved = true;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 });
 
 ipcMain.handle("get-home-path", () => app.getPath("home"));
