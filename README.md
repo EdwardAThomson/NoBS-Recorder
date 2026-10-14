@@ -20,6 +20,9 @@ Built with Electron to ensure rock-solid window capturing without the complexity
     *   **Auto-start**: Opens the webcam on launch while the overlay is ticked.
         The chosen camera is kept for the session but is not yet saved between runs.
     *   **Customizable**: Adjust corner position and size.
+    *   **Resolution**: The camera is opened at 1080p where it supports it. Asked for
+        nothing in particular, Chromium negotiates 640x480 regardless of what the
+        camera can actually do.
 *   **Camera Only**: Fill the entire frame with the camera and capture nothing from the
     screen, for a talking-head recording with no app or desktop visible. No window or
     screen needs to be picked at all. Audio is unchanged, so the mic and (on Windows)

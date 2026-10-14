@@ -278,8 +278,17 @@ async function startWebcam() {
     await listCameras();
     const deviceId = cameraSelect.value;
 
+    // Without an explicit size Chromium negotiates its own default, which is
+    // 640x480 even on a 1080p camera. "ideal" asks for more and still succeeds
+    // on cameras that cannot reach it, falling back to their best.
+    const videoConstraints = {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+    };
+    if (deviceId) videoConstraints.deviceId = { exact: deviceId };
+
     camStream = await navigator.mediaDevices.getUserMedia({
-        video: deviceId ? { deviceId: { exact: deviceId } } : true,
+        video: videoConstraints,
         audio: false
     });
 
