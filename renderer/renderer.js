@@ -5,6 +5,7 @@ const stopBtn = document.getElementById("stopBtn");
 
 const fpsSelect = document.getElementById("fpsSelect");
 const webcamToggle = document.getElementById("webcamToggle");
+const camFullToggle = document.getElementById("camFullToggle");
 const cameraSelect = document.getElementById("cameraSelect");
 const cornerSelect = document.getElementById("cornerSelect");
 const sizeRange = document.getElementById("sizeRange");
@@ -153,11 +154,41 @@ function makeVideoEl(stream) {
     return v;
 }
 
+// True when the camera fills the frame and nothing from the screen is captured.
+function updateStartEnabled() {
+    // Camera-only needs no desktop source; that is the whole point of it.
+    startBtn.disabled = cameraOnly() ? !camStream : !displayStream;
+}
+
+function cameraOnly() {
+    return camFullToggle.checked;
+}
+
+// Draw a video into a rect, cropping the overflowing axis rather than squashing.
+function drawCover(video, x, y, w, h) {
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    const dstAspect = w / h;
+    const srcAspect = vw / vh;
+
+    let sx = 0, sy = 0, sw = vw, sh = vh;
+    if (srcAspect > dstAspect) {
+        sw = Math.round(vh * dstAspect);
+        sx = Math.round((vw - sw) / 2);
+    } else {
+        sh = Math.round(vw / dstAspect);
+        sy = Math.round((vh - sh) / 2);
+    }
+    ctx.drawImage(video, sx, sy, sw, sh, x, y, w, h);
+}
+
 function setCanvasSizeFromTrack() {
-    const track = displayStream?.getVideoTracks()?.[0];
+    const source = cameraOnly() ? camStream : displayStream;
+    const track = source?.getVideoTracks()?.[0];
     const settings = track?.getSettings?.() || {};
-    const w = settings.width || 1280;
-    const h = settings.height || 720;
+    const fallbackVideo = cameraOnly() ? camVideo : displayVideo;
+    const w = settings.width || fallbackVideo?.videoWidth || 1280;
+    const h = settings.height || fallbackVideo?.videoHeight || 720;
     canvas.width = w;
     canvas.height = h;
     log(`Canvas: ${w}x${h}`);
@@ -191,6 +222,12 @@ function roundRect(x, y, w, h, r) {
 function drawLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    if (cameraOnly()) {
+        if (camVideo?.readyState >= 2) drawCover(camVideo, 0, 0, canvas.width, canvas.height);
+        animationHandle = requestAnimationFrame(drawLoop);
+        return;
+    }
+
     if (displayVideo?.readyState >= 2) {
         ctx.drawImage(displayVideo, 0, 0, canvas.width, canvas.height);
     }
@@ -213,22 +250,7 @@ function drawLoop() {
         roundRect(x, y, w, h, r);
         ctx.clip();
 
-        // cover-fit webcam into overlay
-        const vw = camVideo.videoWidth || 1280;
-        const vh = camVideo.videoHeight || 720;
-        const dstAspect = w / h;
-        const srcAspect = vw / vh;
-
-        let sx = 0, sy = 0, sw = vw, sh = vh;
-        if (srcAspect > dstAspect) {
-            sw = Math.round(vh * dstAspect);
-            sx = Math.round((vw - sw) / 2);
-        } else {
-            sh = Math.round(vw / dstAspect);
-            sy = Math.round((vh - sh) / 2);
-        }
-
-        ctx.drawImage(camVideo, sx, sy, sw, sh, x, y, w, h);
+        drawCover(camVideo, x, y, w, h);
         ctx.restore();
     }
 
@@ -263,6 +285,9 @@ async function startWebcam() {
 
     camVideo = makeVideoEl(camStream);
     await camVideo.play();
+    if (cameraOnly()) setCanvasSizeFromTrack();
+    if (!animationHandle) drawLoop();
+    updateStartEnabled();
     log("Webcam started.");
 }
 
@@ -337,7 +362,7 @@ async function acquireDesktopStream(sourceId) {
         sysAudioStream = null;
         displayVideo = null;
         updateSysAudioUi();
-        startBtn.disabled = true;
+        updateStartEnabled();
         selectedLabel.textContent = "Selected: (none)";
         selectedSource = null;
     };
@@ -345,7 +370,7 @@ async function acquireDesktopStream(sourceId) {
     setCanvasSizeFromTrack();
     if (!animationHandle) drawLoop();
 
-    startBtn.disabled = false;
+    updateStartEnabled();
     log("Desktop stream ready.");
 }
 
@@ -434,7 +459,14 @@ async function refreshSources() {
 }
 
 async function startRecording() {
-    if (!displayStream) return;
+    if (cameraOnly()) {
+        if (!camStream) {
+            log("Camera only is on but no camera is running.");
+            return;
+        }
+    } else if (!displayStream) {
+        return;
+    }
 
     // We no longer strictly require a microphone, as system audio might be sufficient.
     // However, if neither is present, it will be a silent video.
@@ -613,7 +645,7 @@ function stopRecording() {
     recordingStatus.classList.add("hidden");
 
     stopBtn.disabled = true;
-    startBtn.disabled = false;
+    updateStartEnabled();
     chooseWindowBtn.disabled = false;
     chooseScreenBtn.disabled = false;
 
@@ -658,16 +690,50 @@ stopBtn.addEventListener("click", () => {
     }
 });
 
+camFullToggle.addEventListener("change", async () => {
+    const on = camFullToggle.checked;
+
+    // Corner and size describe the overlay rectangle, which does not exist when
+    // the camera is the whole frame. The webcam itself cannot be turned off here.
+    cornerSelect.disabled = on || !webcamToggle.checked;
+    sizeRange.disabled = on || !webcamToggle.checked;
+    webcamToggle.disabled = on;
+
+    if (on && !camStream) {
+        // This mode needs a camera, so start one rather than record a black frame.
+        webcamToggle.checked = true;
+        cameraSelect.disabled = false;
+        try {
+            await startWebcam();
+        } catch (e) {
+            log(`Webcam error: ${String(e)}`);
+            camFullToggle.checked = false;
+            webcamToggle.disabled = false;
+            cornerSelect.disabled = !webcamToggle.checked;
+            sizeRange.disabled = !webcamToggle.checked;
+            updateStartEnabled();
+            return;
+        }
+    }
+
+    log(on ? "Camera only: the screen is not captured." : "Camera only off: back to screen capture.");
+
+    setCanvasSizeFromTrack();
+    if (!animationHandle) drawLoop();
+    updateStartEnabled();
+});
+
 webcamToggle.addEventListener("change", async () => {
     const enabled = webcamToggle.checked;
     cameraSelect.disabled = !enabled;
-    cornerSelect.disabled = !enabled;
-    sizeRange.disabled = !enabled;
+    cornerSelect.disabled = !enabled || cameraOnly();
+    sizeRange.disabled = !enabled || cameraOnly();
 
     if (!enabled) {
         stopStream(camStream);
         camStream = null;
         camVideo = null;
+        updateStartEnabled();
         log("Webcam disabled.");
         return;
     }
@@ -742,6 +808,7 @@ navigator.mediaDevices.addEventListener("devicechange", async () => {
     try {
         await listCameras();
         await listMicrophones();
+        updateStartEnabled();
         log("Device list refreshed.");
     } catch (e) {
         log(`Device refresh error: ${String(e)}`);

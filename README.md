@@ -20,6 +20,10 @@ Built with Electron to ensure rock-solid window capturing without the complexity
     *   **Auto-start**: Opens the webcam on launch while the overlay is ticked.
         The chosen camera is kept for the session but is not yet saved between runs.
     *   **Customizable**: Adjust corner position and size.
+*   **Camera Only**: Fill the entire frame with the camera and capture nothing from the
+    screen, for a talking-head recording with no app or desktop visible. No window or
+    screen needs to be picked at all. Audio is unchanged, so the mic and (on Windows)
+    system audio are still mixed in.
 *   **Device Hot-plug**: Camera and microphone lists refresh when hardware is plugged
     in or removed, keeping your current selection whenever it still exists.
 *   **Auto-Save**: Recordings are written straight to disk, no dialog. The default is
@@ -86,6 +90,8 @@ commonly trips over desktop permissions. Windows and macOS keep it enabled.*
 
 1.  **Choose Source**: Click "Choose window" or "Choose screen" to select what you want to capture.
     *   *Note: The recorder app itself is hidden from the window list to prevent infinite mirroring.*
+    *   *Skip this entirely if you tick **Camera only**, which records the camera full
+        frame and ignores the screen.*
 2.  **Setup Audio**:
     *   Select your **Microphone** from the dropdown.
     *   Adjust **Volume** if needed (default is 0dB).
