@@ -4,13 +4,16 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
-    "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "vendor": "node scripts/vendor-mediapipe.js",
+    "postinstall": "node scripts/vendor-mediapipe.js",
+    "start": "node scripts/vendor-mediapipe.js && electron .",
+    "pack": "node scripts/vendor-mediapipe.js && electron-builder --dir",
+    "dist": "node scripts/vendor-mediapipe.js && electron-builder",
+    "dist:win": "node scripts/vendor-mediapipe.js && electron-builder --win",
+    "dist:linux": "node scripts/vendor-mediapipe.js && electron-builder --linux"
   },
   "devDependencies": {
+    "@mediapipe/tasks-vision": "^1.1.1",
     "electron": "^39.2.7",
     "electron-builder": "^26.15.3"
   },

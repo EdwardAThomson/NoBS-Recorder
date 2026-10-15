@@ -6,6 +6,9 @@ const stopBtn = document.getElementById("stopBtn");
 const fpsSelect = document.getElementById("fpsSelect");
 const webcamToggle = document.getElementById("webcamToggle");
 const camFullToggle = document.getElementById("camFullToggle");
+const bgModeSelect = document.getElementById("bgModeSelect");
+const bgImageBtn = document.getElementById("bgImageBtn");
+const bgHint = document.getElementById("bgHint");
 const cameraSelect = document.getElementById("cameraSelect");
 const cornerSelect = document.getElementById("cornerSelect");
 const sizeRange = document.getElementById("sizeRange");
@@ -166,6 +169,16 @@ function cameraOnly() {
 }
 
 // Draw a video into a rect, cropping the overflowing axis rather than squashing.
+// The camera always goes through here: the background effect gets first
+// refusal, and anything it cannot handle falls back to a plain cover-fit so
+// the picture never simply disappears.
+function drawCamera(video, x, y, w, h) {
+    if (window.bgEffect && window.bgEffect.isActive()) {
+        if (window.bgEffect.draw(ctx, video, x, y, w, h)) return;
+    }
+    drawCover(video, x, y, w, h);
+}
+
 function drawCover(video, x, y, w, h) {
     const vw = video.videoWidth || 1280;
     const vh = video.videoHeight || 720;
@@ -224,7 +237,7 @@ function drawLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (cameraOnly()) {
-        if (camVideo?.readyState >= 2) drawCover(camVideo, 0, 0, canvas.width, canvas.height);
+        if (camVideo?.readyState >= 2) drawCamera(camVideo, 0, 0, canvas.width, canvas.height);
         animationHandle = requestAnimationFrame(drawLoop);
         return;
     }
@@ -251,7 +264,7 @@ function drawLoop() {
         roundRect(x, y, w, h, r);
         ctx.clip();
 
-        drawCover(camVideo, x, y, w, h);
+        drawCamera(camVideo, x, y, w, h);
         ctx.restore();
     }
 
@@ -709,6 +722,60 @@ stopBtn.addEventListener("click", () => {
     }
 });
 
+function updateBgUi() {
+    const mode = bgModeSelect.value;
+    bgImageBtn.disabled = mode !== "image";
+    if (mode === "none") {
+        bgHint.textContent = "";
+    } else if (window.bgEffect && window.bgEffect.lastError) {
+        bgHint.textContent = "(unavailable)";
+    } else if (mode === "image" && !window.bgEffect.hasBackgroundImage()) {
+        bgHint.textContent = "(pick an image)";
+    } else {
+        bgHint.textContent = "";
+    }
+}
+
+bgModeSelect.addEventListener("change", async () => {
+    const mode = bgModeSelect.value;
+    window.bgEffect.mode = mode;
+    updateBgUi();
+
+    if (mode === "none") {
+        log("Background effect off.");
+        return;
+    }
+
+    bgHint.textContent = "(starting...)";
+    const ok = await window.bgEffect.start();
+    if (!ok) {
+        log(`Background effect unavailable: ${window.bgEffect.lastError}`);
+        bgModeSelect.value = "none";
+        window.bgEffect.mode = "none";
+        updateBgUi();
+        return;
+    }
+    log(`Background effect: ${mode}.`);
+    if (mode === "image" && !window.bgEffect.hasBackgroundImage()) {
+        await pickBackgroundImage();
+    }
+    updateBgUi();
+});
+
+async function pickBackgroundImage() {
+    try {
+        const picked = await window.api.chooseImage();
+        if (!picked) return;
+        const ok = await window.bgEffect.setBackgroundImage(picked.url);
+        log(ok ? `Background image: ${picked.path}` : `Could not load ${picked.path}`);
+    } catch (e) {
+        log(`Background image error: ${String(e)}`);
+    }
+    updateBgUi();
+}
+
+bgImageBtn.addEventListener("click", pickBackgroundImage);
+
 camFullToggle.addEventListener("change", async () => {
     const on = camFullToggle.checked;
 
@@ -840,6 +907,7 @@ navigator.mediaDevices.addEventListener("devicechange", async () => {
         await listCameras();
         await listMicrophones();
         updateStartEnabled();
+        updateBgUi();
         log("Device list refreshed.");
     } catch (e) {
         log(`Device refresh error: ${String(e)}`);

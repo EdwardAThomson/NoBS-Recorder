@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, desktopCapturer } = require("electron");
 const fs = require("fs");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 // Chromium's setuid sandbox commonly fails on Linux desktops; Windows/macOS keep it on.
 if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
@@ -149,6 +150,17 @@ ipcMain.on("recording-state", (_evt, recording) => {
 ipcMain.on("ready-to-close", () => {
     closeApproved = true;
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+});
+
+ipcMain.handle("choose-image", async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        title: "Choose a background image",
+        properties: ["openFile"],
+        filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "gif", "bmp"] }]
+    });
+    if (canceled || !filePaths.length) return null;
+    // The renderer needs a URL it can hand to an <img>, not a bare path.
+    return { path: filePaths[0], url: pathToFileURL(filePaths[0]).href };
 });
 
 ipcMain.handle("get-home-path", () => app.getPath("home"));

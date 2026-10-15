@@ -27,6 +27,11 @@ Built with Electron to ensure rock-solid window capturing without the complexity
     screen, for a talking-head recording with no app or desktop visible. No window or
     screen needs to be picked at all. Audio is unchanged, so the mic and (on Windows)
     system audio are still mixed in.
+*   **Background Blur / Replace**: Blur what is behind you, or swap it for an image.
+    Uses MediaPipe's selfie segmentation, running locally: the model and its WASM
+    runtime are loaded from disk and nothing is uploaded. Works in both the overlay
+    and Camera only. If the segmenter cannot start, the camera is drawn unchanged
+    rather than failing.
 *   **Device Hot-plug**: Camera and microphone lists refresh when hardware is plugged
     in or removed, keeping your current selection whenever it still exists.
 *   **Auto-Save**: Recordings are written straight to disk, no dialog. The default is
@@ -134,6 +139,10 @@ run until the executable is code-signed.
 *   `main.js`: Electron main process (window management, file saving IPC).
 *   `renderer/renderer.js`: UI logic, stream acquisition, and canvas compositing.
 *   `renderer/webm-remux.js`: Rewrites the recorded container before saving.
+*   `renderer/background.js`: Webcam background blur and replacement.
+*   `renderer/models/`: The selfie segmentation model, committed because npm ships none.
+*   `scripts/vendor-mediapipe.js`: Copies MediaPipe's ~13MB WASM runtime out of
+    `node_modules` into `renderer/vendor/`, which is gitignored and rebuilt on install.
 
 MediaRecorder is a live muxer, so it writes every WebM cluster with an *unknown size*
 marker. Players that scan for cluster IDs (ffmpeg, GStreamer, and so most things on

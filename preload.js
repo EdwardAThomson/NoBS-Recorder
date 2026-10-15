@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("api", {
     setRecordingState: (recording) => ipcRenderer.send("recording-state", recording),
     onStopAndSave: (cb) => ipcRenderer.on("stop-and-save", () => cb()),
     readyToClose: () => ipcRenderer.send("ready-to-close"),
+    chooseImage: () => ipcRenderer.invoke("choose-image"),
     writeFile: (args) => ipcRenderer.invoke("write-file", args),
     getSettings: () => ipcRenderer.invoke("get-settings"),
     saveSettings: (settings) => ipcRenderer.invoke("save-settings", settings),

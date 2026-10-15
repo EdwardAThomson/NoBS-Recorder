@@ -81,6 +81,17 @@
                 <select id="cameraSelect"></select>
             </label>
 
+            <label title="Blur or replace what is behind you. Runs locally on this machine.">
+                Background:
+                <select id="bgModeSelect">
+                    <option value="none" selected>None</option>
+                    <option value="blur">Blur</option>
+                    <option value="image">Image</option>
+                </select>
+                <button id="bgImageBtn" class="link-btn" title="Choose a background image">Choose</button>
+                <span id="bgHint" class="small"></span>
+            </label>
+
             <label>
                 Corner:
                 <select id="cornerSelect">
@@ -136,6 +147,8 @@
         </div>
     </div>
 
+    <script src="./vendor/mediapipe/vision_bundle.js"></script>
+    <script src="./background.js"></script>
     <script src="./webm-remux.js"></script>
     <script src="./renderer.js"></script>
 </body>

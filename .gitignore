@@ -13,6 +13,9 @@
 
 # electron-builder output
 /dist
+
+# reproduced from node_modules by scripts/vendor-mediapipe.js
+/renderer/vendor
 # Environment variables
 .env
 .env.*
