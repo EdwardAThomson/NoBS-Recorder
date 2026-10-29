@@ -653,15 +653,25 @@ async function startRecording() {
             let blob = new Blob(recordedChunks, { type: recorder.mimeType || format.mimeType || "video/webm" });
 
             try {
-                // The remuxer speaks WebM only. An MP4 out of MediaRecorder is
-                // already written with definite sizes and its own index, so it
-                // needs none of this.
+                // Each container leaves MediaRecorder broken in its own way:
+                // WebM without a duration or a seek index, MP4 with its media
+                // duration written in the wrong units. Both are repaired here.
                 if (format.key === "webm" && window.webmRemux) {
                     log("Finalising container...");
                     const fixed = await window.webmRemux.remuxBlob(blob, duration);
                     blob = fixed.blob;
                     if (fixed.stats) {
                         log(`Container: ${fixed.stats.clusters} clusters, ${fixed.stats.cuePoints} cue points, ${(duration / 1000).toFixed(1)}s.`);
+                    }
+                } else if (format.key === "mp4" && window.mp4Fixup) {
+                    log("Finalising container...");
+                    const fixed = await window.mp4Fixup.fixBlob(blob);
+                    blob = fixed.blob;
+                    if (fixed.stats && fixed.stats.patched) {
+                        const first = fixed.stats.details[0];
+                        log(`Container: media duration corrected to ${first.seconds.toFixed(1)}s.`);
+                    } else {
+                        log(`Container: MP4 needed no duration fix.`);
                     }
                 }
             } catch (e) {
@@ -693,7 +703,12 @@ async function startRecording() {
         }
     };
 
-    recorder.start(1000);
+    // MediaRecorder's MP4 muxer only finalises the movie header when it hands
+    // over the whole recording in one blob. Ask it for periodic chunks instead
+    // and the file arrives with mvhd duration 0 and no mfra index, so Media
+    // Foundation can show neither a length nor a scrub position. Costs nothing
+    // to avoid: the chunks are accumulated and written at stop either way.
+    if (format.key === "mp4") recorder.start(); else recorder.start(1000);
     window.api.setRecordingState(true);
 
     startBtn.disabled = true;
