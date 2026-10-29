@@ -9,6 +9,12 @@
  * So we walk the clusters, work out where each one really ends, and re-emit
  * everything with definite sizes. We also write the Duration into Segment>Info,
  * which MediaRecorder leaves out entirely.
+ *
+ * Finally we build a Cues element: the index that maps a timestamp to the byte
+ * offset of the cluster holding it. MediaRecorder cannot write one, because it
+ * does not know a cluster's offset until after it has emitted the one before.
+ * Without it a player can only decode forward from the start, so Media
+ * Foundation plays a recording but refuses to seek inside it.
  */
 (function (root, factory) {
     if (typeof module !== "undefined" && module.exports) module.exports = factory();
@@ -20,6 +26,18 @@
     var ID_CLUSTER = 0x1F43B675;
     var ID_TIMECODE_SCALE = 0x2AD7B1;
     var ID_DURATION = 0x4489;
+    var ID_TIMECODE = 0xE7;
+    var ID_TRACKS = 0x1654AE6B;
+    var ID_TRACK_ENTRY = 0xAE;
+    var ID_TRACK_NUMBER = 0xD7;
+    var ID_TRACK_TYPE = 0x83;
+    var ID_SEEK_HEAD = 0x114D9B74;
+    var ID_CUES = 0x1C53BB6B;
+    var ID_CUE_POINT = 0xBB;
+    var ID_CUE_TIME = 0xB3;
+    var ID_CUE_TRACK_POSITIONS = 0xB7;
+    var ID_CUE_TRACK = 0xF7;
+    var ID_CUE_CLUSTER_POSITION = 0xF1;
 
     // Everything allowed directly inside a Cluster. An ID outside this set means
     // the cluster has ended - that is how an unknown-sized element terminates.
@@ -147,8 +165,117 @@
         return { bytes: concat(kept), replaced: replaced };
     }
 
+    // Cue times and offsets are written at a fixed width so that the length of
+    // the Cues element does not depend on the values inside it. That length has
+    // to be settled before the cluster offsets can be measured, and those
+    // offsets are precisely what goes in. Eight bytes is the EBML ceiling for an
+    // unsigned integer, so no offset can outgrow the room reserved for it.
+    var CUE_WIDTH = 8;
+
+    function readUint(buf, start, end) {
+        var v = 0;
+        for (var i = start; i < end; i++) v = v * 256 + buf[i];
+        return v;
+    }
+
+    // An EBML ID carries its own length marker, so the bytes of the constant are
+    // already the bytes that go on the wire.
+    function encodeId(id) {
+        var bytes = [];
+        while (id > 0) { bytes.unshift(id % 256); id = Math.floor(id / 256); }
+        return new Uint8Array(bytes);
+    }
+
+    function uintFixed(value, width) {
+        var out = new Uint8Array(width);
+        for (var i = width - 1; i >= 0; i--) {
+            out[i] = value % 256;
+            value = Math.floor(value / 256);
+        }
+        return out;
+    }
+
+    function el(id, content) {
+        return concat(element(encodeId(id), content));
+    }
+
+    function lengthOf(parts) {
+        var total = 0;
+        for (var i = 0; i < parts.length; i++) total += parts[i].length;
+        return total;
+    }
+
+    // A cluster's Timecode is already in TimecodeScale units, which is what
+    // CueTime is measured in, so it carries across untouched.
+    function clusterTimecode(buf, dataStart, dataEnd) {
+        var pos = dataStart;
+        while (pos < dataEnd) {
+            var id = readId(buf, pos);
+            if (!id) return null;
+            var sz = readSize(buf, pos + id.length);
+            if (!sz || sz.unknown) return null;
+            var start = pos + id.length + sz.length;
+            var end = Math.min(start + sz.value, dataEnd);
+            if (id.value === ID_TIMECODE) return readUint(buf, start, end);
+            if (end <= pos) return null;
+            pos = end;
+        }
+        return null;
+    }
+
+    // Every cue names a track. Prefer the video track, so that scrubbing lands
+    // on pictures, but index an audio-only recording rather than leaving it bare.
+    function findCueTrack(content) {
+        var pos = 0, first = 0, video = 0;
+        while (pos < content.length) {
+            var id = readId(content, pos);
+            if (!id) break;
+            var sz = readSize(content, pos + id.length);
+            if (!sz) break;
+            var dataStart = pos + id.length + sz.length;
+            var end = Math.min(dataStart + sz.value, content.length);
+            if (id.value === ID_TRACK_ENTRY) {
+                var number = 0, type = 0, p = dataStart;
+                while (p < end) {
+                    var eid = readId(content, p);
+                    if (!eid) break;
+                    var esz = readSize(content, p + eid.length);
+                    if (!esz) break;
+                    var eStart = p + eid.length + esz.length;
+                    var eEnd = Math.min(eStart + esz.value, end);
+                    if (eid.value === ID_TRACK_NUMBER) number = readUint(content, eStart, eEnd);
+                    if (eid.value === ID_TRACK_TYPE) type = readUint(content, eStart, eEnd);
+                    if (eEnd <= p) break;
+                    p = eEnd;
+                }
+                if (number) {
+                    if (!first) first = number;
+                    if (type === 1 && !video) video = number;
+                }
+            }
+            if (end <= pos) break;
+            pos = end;
+        }
+        return video || first || 1;
+    }
+
+    function buildCues(entries, track) {
+        var points = [];
+        for (var i = 0; i < entries.length; i++) {
+            var positions = concat([
+                el(ID_CUE_TRACK, uintFixed(track, CUE_WIDTH)),
+                el(ID_CUE_CLUSTER_POSITION, uintFixed(entries[i].position, CUE_WIDTH))
+            ]);
+            points.push(el(ID_CUE_POINT, concat([
+                el(ID_CUE_TIME, uintFixed(entries[i].time, CUE_WIDTH)),
+                el(ID_CUE_TRACK_POSITIONS, positions)
+            ])));
+        }
+        return el(ID_CUES, concat(points));
+    }
+
     function remuxBytes(buf, durationMs) {
-        var stats = { clusters: 0, unknownSized: 0, durationReplaced: false };
+        var stats = { clusters: 0, unknownSized: 0, durationReplaced: false, cuePoints: 0, droppedIndex: false };
         var pos = 0, head = [], segmentIdBytes = null, segmentStart = -1;
 
         // Copy everything before the Segment (the EBML header) verbatim.
@@ -171,6 +298,7 @@
         if (segmentStart < 0) return null;
 
         var children = [];
+        var cueTrack = 1;
         pos = segmentStart;
         while (pos < buf.length) {
             var cid = readId(buf, pos);
@@ -190,24 +318,73 @@
                 cEnd = findClusterEnd(buf, cStart);
                 stats.clusters++;
                 if (csz.unknown) stats.unknownSized++;
-                children.push(element(idBytes, buf.slice(cStart, cEnd)));
+                children.push({
+                    parts: element(idBytes, buf.slice(cStart, cEnd)),
+                    cluster: true,
+                    time: clusterTimecode(buf, cStart, cEnd)
+                });
             } else if (cid.value === ID_INFO) {
                 cEnd = csz.unknown ? buf.length : Math.min(cStart + csz.value, buf.length);
                 var info = rebuildInfo(buf.slice(cStart, cEnd), durationMs);
                 stats.durationReplaced = info.replaced;
-                children.push(element(idBytes, info.bytes));
+                children.push({ parts: element(idBytes, info.bytes) });
+            } else if (cid.value === ID_CUES || cid.value === ID_SEEK_HEAD) {
+                // Both are tables of byte offsets into the segment, and giving
+                // every element a definite size moves the bytes they point at.
+                // A carried-over index would send a player to the wrong place,
+                // which is worse than no index at all: drop it, and write a
+                // fresh Cues below from offsets we have just measured.
+                cEnd = csz.unknown ? buf.length : Math.min(cStart + csz.value, buf.length);
+                stats.droppedIndex = true;
             } else {
                 cEnd = csz.unknown ? buf.length : Math.min(cStart + csz.value, buf.length);
-                children.push([buf.slice(pos, cEnd)]);
+                if (cid.value === ID_TRACKS) cueTrack = findCueTrack(buf.slice(cStart, cEnd));
+                children.push({ parts: [buf.slice(pos, cEnd)] });
             }
 
             if (cEnd <= pos) break;
             pos = cEnd;
         }
 
+        var i, j;
+        var firstCluster = children.length;
+        for (i = 0; i < children.length; i++) {
+            if (children[i].cluster) { firstCluster = i; break; }
+        }
+
+        // A cluster with no Timecode cannot be pointed at by time, so it is left
+        // out of the index rather than indexed at a guessed position.
+        var entries = [];
+        for (i = 0; i < children.length; i++) {
+            if (children[i].cluster && children[i].time !== null) {
+                entries.push({ time: children[i].time, position: 0, at: i });
+            }
+        }
+
+        // Cues goes immediately before the first cluster, so a player walking
+        // the segment's children meets the index ahead of the data it describes
+        // and needs no SeekHead to find it. CueClusterPosition is measured from
+        // the start of the segment's content, so the index's own length counts
+        // towards every offset in it.
+        var cues = null;
+        if (entries.length) {
+            cues = buildCues(entries, cueTrack);
+            var offset = 0;
+            for (i = 0, j = 0; i < children.length; i++) {
+                if (i === firstCluster) offset += cues.length;
+                if (j < entries.length && entries[j].at === i) entries[j++].position = offset;
+                offset += lengthOf(children[i].parts);
+            }
+            // Fixed-width values keep this second pass exactly as long as the
+            // first, so the offsets just measured are still the right ones.
+            cues = buildCues(entries, cueTrack);
+            stats.cuePoints = entries.length;
+        }
+
         var flat = [];
-        for (var i = 0; i < children.length; i++) {
-            for (var j = 0; j < children[i].length; j++) flat.push(children[i][j]);
+        for (i = 0; i < children.length; i++) {
+            if (cues && i === firstCluster) flat.push(cues);
+            for (j = 0; j < children[i].parts.length; j++) flat.push(children[i].parts[j]);
         }
         var segment = element(segmentIdBytes, concat(flat));
         return { bytes: concat(head.concat(segment)), stats: stats };

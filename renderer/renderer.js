@@ -620,7 +620,7 @@ async function startRecording() {
                     const fixed = await window.webmRemux.remuxBlob(blob, duration);
                     blob = fixed.blob;
                     if (fixed.stats) {
-                        log(`Container: ${fixed.stats.clusters} clusters, ${(duration / 1000).toFixed(1)}s.`);
+                        log(`Container: ${fixed.stats.clusters} clusters, ${fixed.stats.cuePoints} cue points, ${(duration / 1000).toFixed(1)}s.`);
                     }
                 }
             } catch (e) {
