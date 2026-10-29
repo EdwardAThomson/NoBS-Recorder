@@ -156,8 +156,11 @@
                 }
                 var px = maskImage.data;
                 for (var i = 0, j = 0; i < data.length; i++, j += 4) {
-                    // Category 0 is background for the selfie segmenter.
-                    var on = data[i] !== 0 ? 255 : 0;
+                    // selfie_segmenter.tflite labels a single class, "selfie",
+                    // so the person is category 0 and the background is the
+                    // unlabelled rest. Testing for non-zero cuts out the
+                    // background instead of the person.
+                    var on = data[i] === 0 ? 255 : 0;
                     px[j] = 255; px[j + 1] = 255; px[j + 2] = 255; px[j + 3] = on;
                 }
                 mcx.putImageData(maskImage, 0, 0);
