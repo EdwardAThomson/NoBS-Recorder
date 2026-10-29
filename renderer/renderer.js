@@ -311,7 +311,13 @@ async function startWebcam() {
     if (cameraOnly()) setCanvasSizeFromTrack();
     if (!animationHandle) drawLoop();
     updateStartEnabled();
-    log("Webcam started.");
+    // Say what the camera actually gave: "ideal" settles silently for less.
+    const got = camStream.getVideoTracks()[0]?.getSettings?.() || {};
+    const gw = got.width || camVideo.videoWidth, gh = got.height || camVideo.videoHeight;
+    log(`Webcam started: ${gw}x${gh}.`);
+    if (gw && gh && (gw < 1280 || gh < 720)) {
+        log(`WARNING: the webcam is only ${gw}x${gh}. Close other apps using the camera, or pick another camera, before recording.`);
+    }
 }
 
 async function listMicrophones() {
@@ -922,7 +928,11 @@ sysAudioToggle.addEventListener("change", async () => {
 // helpful: request device labels by doing a quick enumerate after permissions
 (async () => {
     try {
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        // Stopped straight away: left running, this stream held the camera open
+        // at Chromium's 640x480 default, and startWebcam's 1080p request then
+        // shared that capture instead of reopening the camera at a new size.
+        const probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        probe.getTracks().forEach(t => t.stop());
     } catch {
         // user may deny; it's fine
     }
