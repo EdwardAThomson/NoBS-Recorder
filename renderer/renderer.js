@@ -4,6 +4,8 @@ const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
 
 const fpsSelect = document.getElementById("fpsSelect");
+const formatSelect = document.getElementById("formatSelect");
+const formatHint = document.getElementById("formatHint");
 const webcamToggle = document.getElementById("webcamToggle");
 const camFullToggle = document.getElementById("camFullToggle");
 const bgModeSelect = document.getElementById("bgModeSelect");
@@ -487,6 +489,47 @@ async function refreshSources() {
     }
 }
 
+// Container choice. MediaRecorder picks the encoder from the MIME type, so this
+// is the only lever on whether the GPU does the encoding: VP8 and VP9 are
+// encoded on the CPU on most hardware - no NVIDIA card has ever had a VP9
+// encoder - while H.264 is the format video encoders actually implement. MP4
+// also seeks in players that will not scrub a WebM.
+const FORMATS = {
+    webm: {
+        ext: "webm",
+        label: "WebM",
+        candidates: ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"]
+    },
+    mp4: {
+        ext: "mp4",
+        label: "MP4",
+        // Baseline H.264 first: the profile hardware encoders support most
+        // widely, so it has the best chance of not landing on the CPU.
+        candidates: ["video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc1", "video/mp4"]
+    }
+};
+
+function chosenFormat() {
+    const key = FORMATS[formatSelect.value] ? formatSelect.value : "webm";
+    const format = FORMATS[key];
+    return {
+        key,
+        ext: format.ext,
+        label: format.label,
+        mimeType: format.candidates.find(t => MediaRecorder.isTypeSupported(t)) || ""
+    };
+}
+
+// Whether this Chromium can mux MP4 at all is a runtime question, so the option
+// is disabled up front rather than left to fail when Start is pressed.
+function updateFormatUi() {
+    const option = formatSelect.querySelector('option[value="mp4"]');
+    const ok = FORMATS.mp4.candidates.some(t => MediaRecorder.isTypeSupported(t));
+    if (option) option.disabled = !ok;
+    if (!ok && formatSelect.value === "mp4") formatSelect.value = "webm";
+    formatHint.textContent = ok ? "" : "(MP4 unavailable)";
+}
+
 async function startRecording() {
     if (cameraOnly()) {
         if (!camStream) {
@@ -593,15 +636,10 @@ async function startRecording() {
 
     recordedChunks = [];
 
-    const mimeCandidates = [
-        "video/webm;codecs=vp9",
-        "video/webm;codecs=vp8",
-        "video/webm"
-    ];
-    const mimeType = mimeCandidates.find(t => MediaRecorder.isTypeSupported(t)) || "";
+    const format = chosenFormat();
 
     recorder = new MediaRecorder(combinedStream, {
-        mimeType,
+        mimeType: format.mimeType,
         videoBitsPerSecond: 3_000_000
     });
 
@@ -612,10 +650,13 @@ async function startRecording() {
     recorder.onstop = async () => {
         try {
             const duration = Date.now() - startTime;
-            let blob = new Blob(recordedChunks, { type: recorder.mimeType || "video/webm" });
+            let blob = new Blob(recordedChunks, { type: recorder.mimeType || format.mimeType || "video/webm" });
 
             try {
-                if (window.webmRemux) {
+                // The remuxer speaks WebM only. An MP4 out of MediaRecorder is
+                // already written with definite sizes and its own index, so it
+                // needs none of this.
+                if (format.key === "webm" && window.webmRemux) {
                     log("Finalising container...");
                     const fixed = await window.webmRemux.remuxBlob(blob, duration);
                     blob = fixed.blob;
@@ -627,7 +668,7 @@ async function startRecording() {
                 log(`Container fix error: ${e}`);
             }
 
-            const filename = `nobs-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+            const filename = `nobs-${new Date().toISOString().replace(/[:.]/g, "-")}.${format.ext}`;
             try {
                 // The renderer has no path module, so main joins folder + filename
                 // with the right separator for the platform.
@@ -660,7 +701,7 @@ async function startRecording() {
     chooseWindowBtn.disabled = true;
     chooseScreenBtn.disabled = true;
 
-    log(`Recording started (${mimeType || "default"} @ ${fps}fps).`);
+    log(`Recording started (${format.mimeType || "default"} @ ${fps}fps).`);
 
     // Start Visual Timer
     recordingStatus.classList.remove("hidden");
@@ -925,6 +966,13 @@ sysAudioToggle.addEventListener("change", async () => {
     log(`System audio ${sysAudioToggle.checked ? "enabled" : "disabled"}.`);
 });
 
+formatSelect.addEventListener("change", async () => {
+    updateFormatUi();
+    await window.api.saveSettings({ format: formatSelect.value });
+    const picked = chosenFormat();
+    log(`Format: ${picked.label} (${picked.mimeType || "no supported codec"}).`);
+});
+
 // helpful: request device labels by doing a quick enumerate after permissions
 (async () => {
     try {
@@ -945,6 +993,10 @@ sysAudioToggle.addEventListener("change", async () => {
         if (settings && typeof settings.systemAudio === "boolean") {
             sysAudioToggle.checked = settings.systemAudio;
         }
+        if (settings && FORMATS[settings.format]) {
+            formatSelect.value = settings.format;
+        }
+        updateFormatUi();
         const resolved = await window.api.resolveOutputFolder();
         applyOutputFolder(resolved.folder, resolved.isDefault);
         if (resolved.rejected) {

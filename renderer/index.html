@@ -44,6 +44,16 @@
                 </select>
             </label>
 
+            <label
+                title="WebM is the safe default. MP4 uses H.264, which hardware video encoders support and which more players will seek inside.">
+                Format:
+                <select id="formatSelect">
+                    <option value="webm" selected>WebM (VP9)</option>
+                    <option value="mp4">MP4 (H.264)</option>
+                </select>
+                <span id="formatHint" class="small"></span>
+            </label>
+
             <label>
                 Mic:
                 <select id="micSelect">
