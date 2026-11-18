@@ -69,6 +69,15 @@ let micShaper = null;
 let micDest = null;
 let homeDir = "";
 
+// When the captured window closes, Chromium ends the track and there is nothing
+// left to draw. Cutting the recording there throws away whatever is still being
+// said over it, so the last good frame is kept and painted in its place until
+// the user stops. frozenFrame holds that still; sourceGone says we are showing
+// it rather than a live window.
+let frozenFrame = null;
+let sourceGone = false;
+let lastFrameSnapshot = 0;
+
 function formatPath(p) {
     if (!p) return "";
     if (homeDir && p.startsWith(homeDir)) {
@@ -235,6 +244,25 @@ function roundRect(x, y, w, h, r) {
     ctx.closePath();
 }
 
+// Keep a recent copy of the screen content to fall back on. Taking it only
+// once the track has ended is too late to rely on: the window is already gone
+// and the frame that was on the canvas may have been cleared, so a stale-by-
+// half-a-second still is the dependable version. It is copied before the
+// webcam overlay is drawn, so the live overlay can be composited over it
+// later rather than being baked in twice.
+function rememberFrame() {
+    const now = performance.now();
+    if (now - lastFrameSnapshot < 500) return;
+    lastFrameSnapshot = now;
+
+    if (!frozenFrame || frozenFrame.width !== canvas.width || frozenFrame.height !== canvas.height) {
+        frozenFrame = document.createElement("canvas");
+        frozenFrame.width = canvas.width;
+        frozenFrame.height = canvas.height;
+    }
+    frozenFrame.getContext("2d").drawImage(canvas, 0, 0);
+}
+
 function drawLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -246,6 +274,13 @@ function drawLoop() {
 
     if (displayVideo?.readyState >= 2) {
         ctx.drawImage(displayVideo, 0, 0, canvas.width, canvas.height);
+        rememberFrame();
+    } else if (sourceGone && frozenFrame) {
+        // The window is gone. Hold its last frame so the canvas keeps handing
+        // MediaRecorder real frames; the webcam overlay below still draws live
+        // on top of the still. Gated on sourceGone so a leftover still cannot
+        // flash while a newly picked window is still coming up.
+        ctx.drawImage(frozenFrame, 0, 0, canvas.width, canvas.height);
     }
 
     if (webcamToggle.checked && camVideo?.readyState >= 2) {
@@ -385,13 +420,28 @@ async function acquireDesktopStream(sourceId) {
     // if the source goes away, the track can end
     const track = displayStream.getVideoTracks()[0];
     track.onended = () => {
+        // Mid-recording this used to call stopRecording(), which ended the take
+        // at the instant the window shut - losing whatever was still being said
+        // over it. Hold the last frame and keep going instead; only Stop ends a
+        // recording now. The display stream is deliberately left running: on
+        // Windows the loopback audio track lives in it, and stopping it here
+        // would take system audio down with the dead video track.
+        if (recorder && recorder.state !== "inactive") {
+            sourceGone = true;
+            displayVideo = null;
+            selectedLabel.textContent = `Selected: ${selectedSource?.name || "(unknown)"} — closed, holding last frame`;
+            log("Source closed mid-recording; holding its last frame. Audio is still recording — press Stop to finish.");
+            return;
+        }
+
         log("Source ended (window closed or capture stopped).");
-        if (recorder && recorder.state !== "inactive") stopRecording();
         stopStream(displayStream);
         stopStream(sysAudioStream);
         displayStream = null;
         sysAudioStream = null;
         displayVideo = null;
+        frozenFrame = null;
+        sourceGone = false;
         updateSysAudioUi();
         updateStartEnabled();
         selectedLabel.textContent = "Selected: (none)";
@@ -693,6 +743,26 @@ async function startRecording() {
         } catch (err) {
             log(`Save failed: ${String(err)}`);
         } finally {
+            // The blob is muxed and written, so the graph that fed it can go.
+            releaseAudioChain();
+
+            // A source that closed mid-recording was kept alive only so the
+            // take could finish over its last frame. Now it can be let go.
+            if (sourceGone) {
+                stopStream(displayStream);
+                stopStream(sysAudioStream);
+                displayStream = null;
+                sysAudioStream = null;
+                displayVideo = null;
+                frozenFrame = null;
+                sourceGone = false;
+                selectedSource = null;
+                selectedLabel.textContent = "Selected: (none)";
+                updateSysAudioUi();
+                updateStartEnabled();
+                log("Closed source released. Pick a window or screen for the next take.");
+            }
+
             // Only now is the file actually on disk, so only now is it safe to
             // let a pending close go through.
             window.api.setRecordingState(false);
@@ -745,11 +815,19 @@ function stopRecording() {
 
     log("Recording stopped.");
 
-    // stop mic immediately to release device
+    // The mic and the AudioContext used to be torn down right here, a line
+    // after recorder.stop(). The destination node they feed is a live track in
+    // the stream MediaRecorder is still muxing, and stop() only queues the
+    // flush - so the graph was being pulled out from under it. MP4 makes that
+    // sharpest, since the whole file arrives in a single blob at stop. Both are
+    // released from onstop now, once the blob is in hand.
+}
+
+// Release the capture devices. Called from onstop, never before it: see above.
+function releaseAudioChain() {
     stopStream(micStream);
     micStream = null;
 
-    // Clean up AudioContext
     if (audioCtx) {
         audioCtx.close();
         audioCtx = null;
