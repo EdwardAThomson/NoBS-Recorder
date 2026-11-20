@@ -119,6 +119,23 @@
             </label>
         </div>
 
+        <div class="row">
+            <label title="Your YouTube ingest address. Found under Go Live in YouTube Studio.">
+                Live URL:
+                <input type="text" id="liveUrlInput" value="rtmp://a.rtmp.youtube.com/live2"
+                    style="width: 230px;" />
+            </label>
+
+            <label title="Your stream key. Treated as a password: it is never written to the log.">
+                Key:
+                <input type="password" id="liveKeyInput" placeholder="stream key" style="width: 150px;" />
+            </label>
+
+            <button id="goLiveBtn" disabled>Go Live</button>
+            <button id="stopLiveBtn" disabled>Stop Live</button>
+            <span id="liveStatus" class="small"></span>
+        </div>
+
         <div class="row small">
             <div id="selectedLabel">Selected: (none)</div>
         </div>
@@ -161,6 +178,8 @@
     <script src="./background.js"></script>
     <script src="./webm-remux.js"></script>
     <script src="./mp4-fixup.js"></script>
+    <script src="./flv-tag.js"></script>
+    <script src="./stream.js"></script>
     <script src="./renderer.js"></script>
 </body>
 

@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, desktopCapturer } = require("electr
 const fs = require("fs");
 const path = require("path");
 const { pathToFileURL } = require("url");
+const { RtmpPublisher } = require("./rtmp-client");
 
 // Chromium's setuid sandbox commonly fails on Linux desktops; Windows/macOS keep it on.
 if (process.platform === "linux") app.commandLine.appendSwitch("no-sandbox");
@@ -164,6 +165,77 @@ ipcMain.handle("choose-image", async () => {
 });
 
 ipcMain.handle("get-home-path", () => app.getPath("home"));
+
+/*
+ * Live streaming. The socket lives here because the renderer has no net access;
+ * the renderer encodes and packages, and sends FLV tag bodies down.
+ *
+ * One stream at a time, deliberately. Two would mean two encoders competing for
+ * the same GPU and no way to tell which one wilted.
+ */
+let publisher = null;
+let backlogTimer = null;
+
+function streamEvent(payload) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("stream-event", payload);
+    }
+}
+
+function stopPublisher() {
+    if (backlogTimer) { clearInterval(backlogTimer); backlogTimer = null; }
+    if (publisher) {
+        const leaving = publisher;
+        publisher = null;
+        try { leaving.close(); } catch (e) { /* going away regardless */ }
+    }
+}
+
+ipcMain.handle("stream-connect", async (_evt, { url, streamKey }) => {
+    if (publisher) throw new Error("already streaming");
+    const client = new RtmpPublisher({ url, streamKey });
+
+    // A socket error after connect would otherwise be unobservable here.
+    client.on("error", (err) => streamEvent({ type: "error", message: err.message }));
+    client.on("close", () => {
+        if (publisher === client) { stopPublisher(); streamEvent({ type: "closed" }); }
+    });
+    client.on("status", (s) => streamEvent({ type: "status", code: s.code, description: s.description }));
+
+    await client.connect();
+    publisher = client;
+
+    // The renderer decides whether to drop frames, so it needs to know how far
+    // behind the socket is. Polling beats a message per frame.
+    backlogTimer = setInterval(() => {
+        if (publisher) streamEvent({ type: "backlog", bytes: publisher.bufferedBytes });
+    }, 500);
+    return true;
+});
+
+ipcMain.on("stream-metadata", (_evt, info) => {
+    if (!publisher) return;
+    try { publisher.sendMetadata(info || {}); }
+    catch (err) { streamEvent({ type: "error", message: "metadata failed: " + err.message }); }
+});
+
+ipcMain.on("stream-send", (_evt, kind, timestampMs, buffer) => {
+    if (!publisher) return;
+    try {
+        const body = Buffer.from(buffer);
+        if (kind === "video") publisher.sendVideo(timestampMs, body);
+        else publisher.sendAudio(timestampMs, body);
+    } catch (err) {
+        streamEvent({ type: "error", message: "send failed: " + err.message });
+        stopPublisher();
+    }
+});
+
+ipcMain.handle("stream-stop", async () => {
+    stopPublisher();
+    return true;
+});
+
 
 ipcMain.handle("confirm-silent-recording", async (_evt, { detail }) => {
     const { response } = await dialog.showMessageBox({

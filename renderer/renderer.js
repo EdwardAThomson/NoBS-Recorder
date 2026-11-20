@@ -6,6 +6,11 @@ const stopBtn = document.getElementById("stopBtn");
 const fpsSelect = document.getElementById("fpsSelect");
 const formatSelect = document.getElementById("formatSelect");
 const formatHint = document.getElementById("formatHint");
+const liveUrlInput = document.getElementById("liveUrlInput");
+const liveKeyInput = document.getElementById("liveKeyInput");
+const goLiveBtn = document.getElementById("goLiveBtn");
+const stopLiveBtn = document.getElementById("stopLiveBtn");
+const liveStatus = document.getElementById("liveStatus");
 const webcamToggle = document.getElementById("webcamToggle");
 const camFullToggle = document.getElementById("camFullToggle");
 const bgModeSelect = document.getElementById("bgModeSelect");
@@ -172,7 +177,11 @@ function makeVideoEl(stream) {
 // True when the camera fills the frame and nothing from the screen is captured.
 function updateStartEnabled() {
     // Camera-only needs no desktop source; that is the whole point of it.
-    startBtn.disabled = cameraOnly() ? !camStream : !displayStream;
+    const noSource = cameraOnly() ? !camStream : !displayStream;
+    startBtn.disabled = noSource;
+    const live = window.liveStream && window.liveStream.isLive();
+    goLiveBtn.disabled = noSource || live || !liveKeyInput.value.trim();
+    stopLiveBtn.disabled = !live;
 }
 
 function cameraOnly() {
@@ -263,12 +272,24 @@ function rememberFrame() {
     frozenFrame.getContext("2d").drawImage(canvas, 0, 0);
 }
 
+/*
+ * Streaming reads the canvas straight out of the draw loop. The frame is
+ * already composited by the time we get here, so there is no second capture of
+ * the screen and no extra copy of the picture.
+ */
+function afterPaint() {
+    if (window.liveStream && window.liveStream.isLive()) {
+        window.liveStream.pushFrame(canvas, performance.now());
+    }
+    animationHandle = requestAnimationFrame(drawLoop);
+}
+
 function drawLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (cameraOnly()) {
         if (camVideo?.readyState >= 2) drawCamera(camVideo, 0, 0, canvas.width, canvas.height);
-        animationHandle = requestAnimationFrame(drawLoop);
+        afterPaint();
         return;
     }
 
@@ -305,7 +326,7 @@ function drawLoop() {
         ctx.restore();
     }
 
-    animationHandle = requestAnimationFrame(drawLoop);
+    afterPaint();
 }
 
 async function listCameras() {
@@ -580,43 +601,26 @@ function updateFormatUi() {
     formatHint.textContent = ok ? "" : "(MP4 unavailable)";
 }
 
-async function startRecording() {
-    if (cameraOnly()) {
-        if (!camStream) {
-            log("Camera only is on but no camera is running.");
-            return;
-        }
-    } else if (!displayStream) {
-        return;
-    }
+/*
+ * Builds the microphone and system-audio graph, once.
+ *
+ * This is the part of the app that exists because other capture tools upset
+ * some microphones: nothing here opens a device in exclusive mode or installs a
+ * hook, it is plain getUserMedia with the browser's own processing switched off,
+ * feeding a gain stage and a limiter. So it is built in exactly one place, and
+ * recording and streaming both attach to the same destination rather than each
+ * opening the device and fighting over it.
+ *
+ * Kept alive once created, for the same reason the teardown further down was
+ * removed: the destination node feeds a live track that a recorder or a stream
+ * may still be holding.
+ */
+let audioGraph = null;
 
-    // We no longer strictly require a microphone, as system audio might be sufficient.
-    // However, if neither is present, it will be a silent video.
-
-    const useSysAudio = !!sysAudioStream && sysAudioToggle.checked;
-
-    // Nothing selected means a silent video, which is easy to do by accident
-    // and only discovered after the fact.
-    if (!micSelect.value && !useSysAudio) {
-        const detail = sysAudioStream
-            ? 'No microphone is selected, and System audio is switched off.'
-            : 'No microphone is selected, and this platform provides no system audio.';
-        const proceed = await window.api.confirmSilentRecording(detail);
-        if (!proceed) {
-            log('Start cancelled: the recording would have had no sound.');
-            return;
-        }
-        log('Recording with no audio source, as confirmed.');
-    }
-
-    const fps = Number(fpsSelect.value);
-
-    // ensure draw loop running
-    if (!animationHandle) drawLoop();
-
+async function ensureAudioGraph(useSysAudio) {
+    if (audioGraph) return audioGraph.track;
     let audioTrack = null;
 
-    // Process/Mix Audio (System Audio + Mic)
     if (micSelect.value || useSysAudio) {
         if (!audioCtx) audioCtx = new AudioContext();
         const dest = audioCtx.createMediaStreamDestination();
@@ -674,6 +678,46 @@ async function startRecording() {
             audioTrack = dest.stream.getAudioTracks()[0];
         }
     }
+
+    audioGraph = { track: audioTrack };
+    return audioTrack;
+}
+
+async function startRecording() {
+    if (cameraOnly()) {
+        if (!camStream) {
+            log("Camera only is on but no camera is running.");
+            return;
+        }
+    } else if (!displayStream) {
+        return;
+    }
+
+    // We no longer strictly require a microphone, as system audio might be sufficient.
+    // However, if neither is present, it will be a silent video.
+
+    const useSysAudio = !!sysAudioStream && sysAudioToggle.checked;
+
+    // Nothing selected means a silent video, which is easy to do by accident
+    // and only discovered after the fact.
+    if (!micSelect.value && !useSysAudio) {
+        const detail = sysAudioStream
+            ? 'No microphone is selected, and System audio is switched off.'
+            : 'No microphone is selected, and this platform provides no system audio.';
+        const proceed = await window.api.confirmSilentRecording(detail);
+        if (!proceed) {
+            log('Start cancelled: the recording would have had no sound.');
+            return;
+        }
+        log('Recording with no audio source, as confirmed.');
+    }
+
+    const fps = Number(fpsSelect.value);
+
+    // ensure draw loop running
+    if (!animationHandle) drawLoop();
+
+    let audioTrack = await ensureAudioGraph(useSysAudio);
 
     const canvasStream = canvas.captureStream(fps);
 
@@ -1059,6 +1103,87 @@ sysAudioToggle.addEventListener("change", async () => {
     log(`System audio ${sysAudioToggle.checked ? "enabled" : "disabled"}.`);
 });
 
+/*
+ * The stream key is a password: it goes from the box to the socket and is never
+ * logged, saved, or put in an error message. The URL is saved, since it is not
+ * a secret and is tedious to retype.
+ */
+goLiveBtn.addEventListener("click", async () => {
+    const url = liveUrlInput.value.trim();
+    const streamKey = liveKeyInput.value.trim();
+    if (!url || !streamKey) return;
+
+    goLiveBtn.disabled = true;
+    liveStatus.textContent = "(connecting...)";
+    try {
+        const useSysAudio = sysAudioToggle.checked && !sysAudioToggle.disabled;
+        const audioTrack = await ensureAudioGraph(useSysAudio);
+        if (!audioTrack) log("Going live without audio: no microphone or system audio selected.");
+
+        // The canvas is sized from the source, so stream whatever it is now.
+        await window.liveStream.start({
+            url,
+            streamKey,
+            width: canvas.width,
+            height: canvas.height,
+            fps: Number(fpsSelect.value),
+            videoBitrate: 4_500_000,
+            audioBitrate: 128_000,
+            audioSampleRate: audioCtx ? audioCtx.sampleRate : 48000,
+            channels: 2,
+            audioTrack,
+            onStatus: onLiveStatus
+        });
+        await window.api.saveSettings({ liveUrl: url });
+        log(`Live: ${canvas.width}x${canvas.height} @ ${fpsSelect.value}fps.`);
+    } catch (e) {
+        // Never interpolate the key into anything, and the url is safe to show.
+        liveStatus.textContent = "(failed)";
+        log(`Could not go live: ${String(e && e.message ? e.message : e)}`);
+    }
+    updateStartEnabled();
+});
+
+stopLiveBtn.addEventListener("click", async () => {
+    stopLiveBtn.disabled = true;
+    await window.liveStream.stop("stopped by you");
+    updateStartEnabled();
+});
+
+liveKeyInput.addEventListener("input", updateStartEnabled);
+
+function onLiveStatus(update) {
+    const s = update.stats || {};
+    liveStatus.textContent = window.liveStream.isLive()
+        ? `(live - ${s.framesSent || 0} frames, ${s.framesDropped || 0} dropped)`
+        : "";
+    if (update.message) log(`Stream: ${update.message}`);
+    if (update.fatal) log("Stream stopped.");
+    updateStartEnabled();
+}
+
+// Events from the socket, which lives in the main process.
+window.api.onStreamEvent((payload) => {
+    if (!payload) return;
+    if (payload.type === "backlog") {
+        window.liveStream.setSocketBacklog(payload.bytes);
+        return;
+    }
+    if (payload.type === "status") {
+        log(`Stream: ${payload.code}${payload.description ? " - " + payload.description : ""}`);
+        return;
+    }
+    if (payload.type === "error") {
+        log(`Stream error: ${payload.message}`);
+        window.liveStream.stop("connection failed");
+        return;
+    }
+    if (payload.type === "closed") {
+        if (window.liveStream.isLive()) window.liveStream.stop("connection closed by the server");
+        updateStartEnabled();
+    }
+});
+
 formatSelect.addEventListener("change", async () => {
     updateFormatUi();
     await window.api.saveSettings({ format: formatSelect.value });
@@ -1088,6 +1213,9 @@ formatSelect.addEventListener("change", async () => {
         }
         if (settings && FORMATS[settings.format]) {
             formatSelect.value = settings.format;
+        }
+        if (settings && settings.liveUrl) {
+            liveUrlInput.value = settings.liveUrl;
         }
         updateFormatUi();
         const resolved = await window.api.resolveOutputFolder();
